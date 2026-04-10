@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/">
+        <file>icons/addbutton.png</file>
+        <file>icons/download.png</file>
+        <file>icons/title.png</file>
+        <file>icons/openfolder.png</file>
+        <file>icons/canceldownload.png</file>
+        <file>icons/removetask.png</file>
+        <file>icons/retrydownload.png</file>
+        <file>icons/selectall.png</file>
+        <file>icons/unfullyselected.png</file>
+    </qresource>
+</RCC>
