@@ -4,6 +4,7 @@
 #include <QUrl>
 #include <QString>	
 #include <QNetworkAccessManager>
+#include <QTimer>
 
 class HeadRequestTask : public QObject
 {
@@ -29,11 +30,14 @@ public slots:
 
 private slots:
 	void onReplyFinished(QNetworkReply* reply);
+	void retryRequest();
 
 private:
 	void parseFileInfo(QNetworkReply* reply);
 	bool checkDiskSpace(qint64 requiredBytes);
 	QString generateUniqueFileName(const QString& saveDir, const QString& fileName);
+	void cleanupReply();
+	void emitFinalResult();
 
 	QUrl m_url;
 	QString m_fileName;
@@ -46,4 +50,9 @@ private:
 	bool m_supportsRange = false;
 	QNetworkReply* m_reply = nullptr;
 	QNetworkAccessManager* m_networkManager;
+
+	// 重试相关
+	int m_retryCount = 0;
+	static constexpr int MAX_RETRIES = 3;
+	QTimer m_retryTimer;
 };

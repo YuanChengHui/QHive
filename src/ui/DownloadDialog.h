@@ -27,7 +27,6 @@ private:
 	void getFileNameFromUrl();
 	void populateUrlFromClipboard();
 
-
 private:
 	Ui::DownloadDialogClass ui;
 

@@ -352,7 +352,7 @@ QProgressBar::chunk {
        <item>
         <layout class="QHBoxLayout" name="buttonLayout">
          <property name="spacing">
-          <number>27</number>
+          <number>18</number>
          </property>
          <property name="sizeConstraint">
           <enum>QLayout::SizeConstraint::SetFixedSize</enum>
@@ -363,6 +363,84 @@ QProgressBar::chunk {
          <property name="bottomMargin">
           <number>3</number>
          </property>
+         <item>
+          <widget class="QToolButton" name="pauseButton">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>29</width>
+             <height>29</height>
+            </size>
+           </property>
+           <property name="font">
+            <font>
+             <bold>false</bold>
+            </font>
+           </property>
+           <property name="toolTip">
+            <string/>
+           </property>
+           <property name="styleSheet">
+            <string notr="true"/>
+           </property>
+           <property name="text">
+            <string/>
+           </property>
+           <property name="iconSize">
+            <size>
+             <width>20</width>
+             <height>20</height>
+            </size>
+           </property>
+           <property name="autoRaise">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="resumeButton">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>29</width>
+             <height>29</height>
+            </size>
+           </property>
+           <property name="font">
+            <font>
+             <bold>false</bold>
+            </font>
+           </property>
+           <property name="toolTip">
+            <string/>
+           </property>
+           <property name="styleSheet">
+            <string notr="true"/>
+           </property>
+           <property name="text">
+            <string/>
+           </property>
+           <property name="iconSize">
+            <size>
+             <width>20</width>
+             <height>20</height>
+            </size>
+           </property>
+           <property name="autoRaise">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
          <item alignment="Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter">
           <widget class="QToolButton" name="cancelButton">
            <property name="minimumSize">

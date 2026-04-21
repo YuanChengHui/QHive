@@ -1,7 +1,13 @@
 ﻿#include "MultiThreadDownloader.h"
+#include "TaskRepository.h"
+
 #include <QDebug>
 #include <QDir>
-#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QFileInfo>
+#include <numeric>
 
 MultiThreadDownloader::MultiThreadDownloader(const QString& fullSavePath, const QUrl& url,
 	qint64 totalSize, const QString& taskId, int threadCount, QObject* parent)
@@ -14,74 +20,172 @@ MultiThreadDownloader::MultiThreadDownloader(const QString& fullSavePath, const 
 {
 	m_progressTimer = new QTimer(this);
 	m_progressTimer->setInterval(PROGRESS_MERGE_INTERVAL_MS);
-	connect(m_progressTimer, &QTimer::timeout, this, [this]() {	updateTotalProgress(); });
+	connect(m_progressTimer, &QTimer::timeout, this, [this]() { updateTotalProgress(); });
+
+	m_dbSaveTimer = new QTimer(this);
+	m_dbSaveTimer->setInterval(DB_SAVE_INTERVAL_MS);
+	connect(m_dbSaveTimer, &QTimer::timeout, this, [this]() { updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Downloading)); });
 }
 
 MultiThreadDownloader::~MultiThreadDownloader()
 {
-	if (m_progressTimer) {
-		m_progressTimer->stop();
+	if (m_progressTimer) m_progressTimer->stop();
+	if (m_dbSaveTimer) m_dbSaveTimer->stop();
+	stopAllThreads();
+}
+
+void MultiThreadDownloader::restorePausedState()
+{
+	TaskRepository repo;
+	TaskRepository::TaskInfo info = repo.loadTask(m_taskId);
+	if (!info.chunksJson.isEmpty()) {
+		restoreChunksFromJson(info.chunksJson);
+	}
+	m_isPaused = true;
+}
+
+void MultiThreadDownloader::restoreFailedState()
+{
+	TaskRepository repo;
+	TaskRepository::TaskInfo info = repo.loadTask(m_taskId);
+	if (!info.chunksJson.isEmpty()) {
+		restoreChunksFromJson(info.chunksJson);
+	}
+	m_isDownloadEnded = true;
+	m_isFailed = true;
+}
+
+void MultiThreadDownloader::restoreDownloadingState()
+{
+	TaskRepository repo;
+	TaskRepository::TaskInfo info = repo.loadTask(m_taskId);
+	if (!info.chunksJson.isEmpty()) {
+		restoreChunksFromJson(info.chunksJson);
+	}
+	startWorkers();
+}
+
+void MultiThreadDownloader::restoreChunksFromJson(const QString& json)
+{
+	if (json.isEmpty()) return;
+
+	QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
+	if (!doc.isArray()) return;
+
+	QJsonArray array = doc.array();
+	for (const QJsonValue& val : array) {
+		QJsonObject obj = val.toObject();
+		ChunkInfo info;
+		info.id = obj["id"].toInt();
+		info.startByte = obj["startByte"].toVariant().toLongLong();
+		info.endByte = obj["endByte"].toVariant().toLongLong();
+		info.tempFilePath = obj["tempFilePath"].toString();
+		info.errorString = obj["errorString"].toString();
+		info.isEnded = obj["isEnded"].toBool();
+		info.isSuccessful = obj["isSuccessful"].toBool();
+		info.retryCount = obj["retryCount"].toInt();
+
+		m_chunks.insert(info.id, info);
+
+		qint64 downloaded = obj["downloaded"].toVariant().toLongLong();
+		m_chunkDownloaded[info.id] = downloaded;
+
+		if (info.isEnded) {
+			if (info.isSuccessful) {
+				m_successfulChunks.enqueue(info.id);
+			}
+			else {
+				m_failedChunks.enqueue(info.id);
+			}
+		}
+		else {
+			m_pendingChunks.enqueue(info.id);
+		}
 	}
 }
 
-void MultiThreadDownloader::start()
+void MultiThreadDownloader::pause()
 {
-	if (m_initialized) return;
-	calculateRanges();
+	if (m_isDownloadEnded || m_isPaused) return;
+
+	for (auto worker : m_workers) {
+		if (m_workerStatus.value(worker, false)) {
+			worker->pause();
+		}
+	}
+}
+
+void MultiThreadDownloader::resume()
+{
+	if (m_isDownloadEnded || !m_isPaused) return;
+
+	m_isPaused = false;
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
+	emit resumed(m_taskId);
 	startWorkers();
-	m_initialized = true;
-	m_progressTimer->start();
 }
 
 void MultiThreadDownloader::cancel()
 {
-	if (m_cancelled) return;
-	m_progressTimer->stop();
+	if (m_isDownloadEnded) return;
+
+	m_isFailed = true;
+	if (m_isPaused) {
+		m_isDownloadEnded = true;
+		for (int chunkId : m_pendingChunks) {
+			m_chunks[chunkId].errorString = tr("下载已取消");
+		}
+		updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Failed));	
+		emit downloadEnded(m_taskId, true, tr("下载已取消"), m_fullSavePath);
+		return;
+	}
 	for (auto worker : m_workers) {
-		if (worker) worker->cancel();
+		if (m_workerStatus.value(worker, false)) {
+			worker->cancel();
+		}
 	}
-	markPendingAsFailed();
-	updateTotalProgress(); // 发出一次最终进度更新
-	m_cancelled = true;
 }
 
-void MultiThreadDownloader::retry()
-{
-	resetState();
-	start();
+void MultiThreadDownloader::retry() {
+	if (!m_isDownloadEnded || !m_isFailed) return;
+
+	m_isDownloadEnded = false;
+	m_isFailed = false;
+	m_isPaused = false;
+
+	// 将失败分片重新入队，重置重试次数
+	while (!m_failedChunks.isEmpty()) {
+		int id = m_failedChunks.dequeue();
+		m_chunks[id].retryCount = 0;   // 重置
+		m_chunks[id].isEnded = false;
+		m_chunks[id].isSuccessful = false;
+		m_pendingChunks.enqueue(id);
+	}
+
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
+	startWorkers();
 }
 
-void MultiThreadDownloader::resetState()
+void MultiThreadDownloader::start()
 {
-	m_chunks.clear();
-	m_pendingChunks.clear();
-	m_completedChunks = 0;
-	m_failedChunks = 0;
-	m_cancelled = false;
-	m_initialized = false;
-	m_finished = false;
-	m_chunkDownloaded.clear();
-
-	if (m_progressTimer) {
-		m_progressTimer->stop();
-	}
+	calculateRanges();
+	startWorkers();
 }
 
 void MultiThreadDownloader::calculateRanges()
 {
-	// 动态计算分块大小
 	qint64 chunkSize;
-	if (m_totalSize < 50 * 1024 * 1024) {           // 10 MB ~ 50 MB (此时线程数 2)
-		chunkSize = 2 * 1024 * 1024;                // 2 MB
+	if (m_totalSize < 50 * 1024 * 1024) {
+		chunkSize = 2 * 1024 * 1024;
 	}
-	else if (m_totalSize < 200 * 1024 * 1024) {   // 50 MB ~ 200 MB (线程数 4)
-		chunkSize = 4 * 1024 * 1024;                // 4 MB
+	else if (m_totalSize < 200 * 1024 * 1024) {
+		chunkSize = 4 * 1024 * 1024;
 	}
-	else if (m_totalSize < 1024 * 1024 * 1024) {  // 200 MB ~ 1 GB (线程数 8)
-		chunkSize = 8 * 1024 * 1024;                // 8 MB
+	else if (m_totalSize < 1024 * 1024 * 1024) {
+		chunkSize = 8 * 1024 * 1024;
 	}
-	else {                                         // >= 1 GB (线程数 16)
-		chunkSize = 16 * 1024 * 1024;               // 16 MB
+	else {
+		chunkSize = 16 * 1024 * 1024;
 	}
 
 	qint64 remaining = m_totalSize;
@@ -106,121 +210,67 @@ void MultiThreadDownloader::calculateRanges()
 void MultiThreadDownloader::startWorkers()
 {
 	for (int i = 0; i < m_threadCount; ++i) {
-		QThread* thread = new QThread(this);
+		QThread* thread = new QThread;
 		DownloadWorker* worker = new DownloadWorker(i);
 		worker->moveToThread(thread);
-		connect(thread, &QThread::started, worker, &DownloadWorker::startWorking);
-		connect(worker, &DownloadWorker::needChunk, this, &MultiThreadDownloader::assignNextChunk);
-		connect(worker, &DownloadWorker::chunkProgress, this, &MultiThreadDownloader::onWorkerProgress);
-		connect(worker, &DownloadWorker::chunkFinished, this, &MultiThreadDownloader::onWorkerFinished);
+		connect(thread, &QThread::started, worker, &DownloadWorker::requestChunk);
+		connect(worker, &DownloadWorker::needChunk, this, &MultiThreadDownloader::assignChunk);
+		connect(worker, &DownloadWorker::workPaused, this, &MultiThreadDownloader::onWorkPaused);
+		connect(worker, &DownloadWorker::workUpdated, this, &MultiThreadDownloader::onWorkUpdated);
+		connect(worker, &DownloadWorker::workEnded, this, &MultiThreadDownloader::onWorkEnded);
 
 		thread->start();
 		m_threads.append(thread);
 		m_workers.append(worker);
-		m_workerIdle[worker] = true;
+		m_workerStatus[worker] = false; // 初始状态为未工作
+		m_progressTimer->start();
+		m_dbSaveTimer->start();
 	}
 }
 
-void MultiThreadDownloader::assignNextChunk()
+void MultiThreadDownloader::assignChunk()
 {
 	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
-	if (!worker || m_cancelled) return;
-	// 确保 worker 仍在管理列表中
 	if (!m_workers.contains(worker)) return;
 
-	if (m_pendingChunks.isEmpty()) {
-		m_workerIdle[worker] = true;
-		return;
-	}
-	int chunkId = m_pendingChunks.dequeue();
-	auto it = m_chunks.find(chunkId);
-	if (it == m_chunks.end()) 		return;
+	if (!m_isFailed && !m_pendingChunks.isEmpty()) {
+		int chunkId = m_pendingChunks.dequeue();
+		auto it = m_chunks.find(chunkId);
+		if (it == m_chunks.end()) return;
+		const ChunkInfo& chunk = it.value();
+		qint64 alreadyDownloaded = m_chunkDownloaded.value(chunkId, 0);
+		m_activeWorkers++;
+		m_workerStatus[worker] = true;
 
-	const ChunkInfo& chunk = it.value();
-	m_workerIdle[worker] = false;
-
-	QMetaObject::invokeMethod(worker, "startDownload", Qt::QueuedConnection,
-		Q_ARG(QUrl, m_url),
-		Q_ARG(qint64, chunk.startByte),
-		Q_ARG(qint64, chunk.endByte),
-		Q_ARG(QString, chunk.tempFilePath),
-		Q_ARG(int, chunk.id));
-}
-
-void MultiThreadDownloader::onWorkerProgress(int chunkId, qint64 received)
-{
-	if (m_cancelled) return;
-	m_chunkDownloaded[chunkId] = received;
-}
-
-void MultiThreadDownloader::onWorkerFinished(int chunkId, bool success, const QString& error)
-{
-	auto it = m_chunks.find(chunkId);
-	if (it == m_chunks.end()) return;
-
-	if (success) {
-		it->completed = true;
-		it->failed = false;
-		++m_completedChunks;
+		QMetaObject::invokeMethod(worker, "startDownload", Qt::QueuedConnection,
+			Q_ARG(QUrl, m_url),
+			Q_ARG(qint64, chunk.startByte),
+			Q_ARG(qint64, chunk.endByte),
+			Q_ARG(QString, chunk.tempFilePath),
+			Q_ARG(int, chunk.id),
+			Q_ARG(qint64, alreadyDownloaded));
 	}
 	else {
-		it->errorString = error;
-		it->retryCount++;
-		const int MAX_RETRY = 3;
-		if (it->retryCount < MAX_RETRY && !m_cancelled) {
-			it->failed = false;
-			it->completed = false;
-			// 重置该分块的已下载计数，避免重复累加
-			m_chunkDownloaded[chunkId] = 0;
-			m_pendingChunks.enqueue(chunkId);
-		}
-		else {
-			it->failed = true;
-			it->completed = false;
-			++m_failedChunks;
-		}
-	}
-
-	int finishedCount = m_completedChunks + m_failedChunks;
-	int totalChunks = m_chunks.size();
-	bool shouldCheck = (finishedCount == totalChunks);
-
-	if (shouldCheck) {
-		stopAllThreads();
-		checkAllCompleted();
-		return;
-	}
-
-	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
-	if (worker && !m_cancelled) {
-		if (!m_pendingChunks.isEmpty()) {
-			QMetaObject::invokeMethod(worker, &DownloadWorker::startWorking, Qt::QueuedConnection);
-		}
-		else {
-			m_workerIdle[worker] = true;
+		if (m_activeWorkers == 0) {
+			if (m_successfulChunks.size() + m_failedChunks.size() == m_chunks.size() || m_isFailed) {
+				m_progressTimer->stop();
+				m_dbSaveTimer->stop();
+				stopAllThreads();
+				checkAllChunkStatus();
+				m_isDownloadEnded = true;
+			}
 		}
 	}
 }
 
-void MultiThreadDownloader::checkAllCompleted()
+void MultiThreadDownloader::checkAllChunkStatus()
 {
-	if (m_finished) return;
-	m_finished = true;
-	m_progressTimer->stop();	// 任务完成后停止定时器，避免后续事件
-
-	if (m_cancelled) {
-		// 取消后不销毁对象，保留以便重试
-		emit downloadEnded(m_taskId, true, tr("已取消"), m_fullSavePath);
+	updateTotalProgress();
+	if (m_failedChunks.size() > 0) {
+		updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Failed));
+		emit downloadEnded(m_taskId, true, tr("下载失败"), m_fullSavePath);
 		return;
 	}
-
-	if (m_failedChunks > 0) {
-		cleanupTempFiles();
-		QString error = tr("%1 个分块下载失败").arg(m_failedChunks);
-		emit downloadEnded(m_taskId, true, error, m_fullSavePath);
-		return;
-	}
-
 	mergeChunks();
 }
 
@@ -229,7 +279,6 @@ void MultiThreadDownloader::mergeChunks()
 	QFile target(m_fullSavePath);
 	QString errorString;
 	bool mergeError = false;
-
 	if (!target.open(QIODevice::WriteOnly)) {
 		mergeError = true;
 		errorString = tr("无法创建目标文件: %1").arg(target.errorString());
@@ -259,37 +308,145 @@ void MultiThreadDownloader::mergeChunks()
 
 		if (mergeError) {
 			errorString = tr("合并临时文件失败");
-			QFile::remove(m_fullSavePath);  // 删除不完整的目标文件
+			if (QFile::exists(m_fullSavePath)) {
+				QFile::remove(m_fullSavePath);
+			}
 		}
 	}
+	updateStateToDatabase(mergeError ? static_cast<int>(TaskRepository::TaskState::Failed) : static_cast<int>(TaskRepository::TaskState::Completed));
 	cleanupTempFiles();
-	emit downloadProgressUpdate(m_taskId, m_totalSize);
+	m_chunks.clear();
+	m_pendingChunks.clear();
+	m_failedChunks.clear();
+	m_successfulChunks.clear();
+	m_chunkDownloaded.clear();
 	emit downloadEnded(m_taskId, mergeError, errorString, m_fullSavePath);
 }
 
-void MultiThreadDownloader::markPendingAsFailed()
+int MultiThreadDownloader::getRetryDelay(int retryCount) const
 {
-	while (!m_pendingChunks.isEmpty()) {
-		int chunkId = m_pendingChunks.dequeue();
-		auto it = m_chunks.find(chunkId);
-		if (it != m_chunks.end() && !it->completed && !it->failed) {
-			it->failed = true;
-			it->completed = false;
-			it->errorString = tr("已取消");
-			++m_failedChunks;
+	int delay = 1000 * (1 << (retryCount - 1));
+	return qMin(delay, 30000);
+}
+
+void MultiThreadDownloader::retryChunk(int chunkId)
+{
+	if (m_isDownloadEnded) {
+		m_chunks[chunkId].isEnded = true;
+		m_failedChunks.enqueue(chunkId);
+		return;
+	}
+	else if(m_isPaused){
+		m_pendingChunks.enqueue(chunkId);
+		return;
+	}
+
+	auto it = m_chunks.find(chunkId);
+	if (it == m_chunks.end()) return;
+	m_pendingChunks.enqueue(chunkId);
+
+	for (auto worker : m_workers) {
+		if (!m_workerStatus.value(worker, true)) {
+			QMetaObject::invokeMethod(worker, &DownloadWorker::requestChunk, Qt::QueuedConnection);
+			break;
 		}
 	}
+}
+
+void MultiThreadDownloader::onWorkEnded(int chunkId, bool success, const QString& error)
+{
+	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
+	if (success) {
+		m_successfulChunks.enqueue(chunkId);
+		m_chunks[chunkId].isSuccessful = true;
+		m_chunks[chunkId].isEnded = true;
+		m_chunks[chunkId].errorString.clear();
+	}
+	else {
+		m_chunks[chunkId].errorString = error;
+		int retryCount = m_chunks[chunkId].retryCount;
+		if (!m_isFailed && retryCount < MAX_RETRY_COUNT) {
+			m_chunks[chunkId].retryCount++;
+			int delay = getRetryDelay(retryCount);
+			QTimer::singleShot(delay, this, [this, chunkId]() { retryChunk(chunkId); });
+		}
+		else {
+			m_failedChunks.enqueue(chunkId);
+			m_chunks[chunkId].isEnded = true;
+			if (!m_isFailed) {
+				m_isFailed = true;
+			}
+		}
+	}
+	if (m_isPaused) return;
+	m_activeWorkers--;
+	m_workerStatus[worker] = false;
+	worker->requestChunk();
+}
+
+void MultiThreadDownloader::onWorkPaused(int chunkId,bool isWorking)
+{
+	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
+	m_activeWorkers--;
+	if (worker) {
+		m_workerStatus[worker] = false;
+	}
+	if(isWorking){
+	m_pendingChunks.enqueue(chunkId);
+	m_chunks[chunkId].errorString = tr("下载已暂停");
+	}
+	
+	if (m_activeWorkers == 0) {
+		m_progressTimer->stop();
+		m_dbSaveTimer->stop();
+		stopAllThreads();
+		updateTotalProgress();
+		updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Paused));
+		m_isPaused = true;
+		emit paused(m_taskId);
+	}
+}
+
+void MultiThreadDownloader::onWorkUpdated(int chunkId, qint64 received)
+{
+	if (m_isDownloadEnded || m_isPaused) return;
+	m_chunkDownloaded[chunkId] = received;
 }
 
 void MultiThreadDownloader::updateTotalProgress()
 {
-	if (m_cancelled || m_finished) return;
-
+	if (m_isDownloadEnded || m_isPaused) return;
 	qint64 totalReceived = 0;
 	for (auto it = m_chunkDownloaded.constBegin(); it != m_chunkDownloaded.constEnd(); ++it) {
 		totalReceived += it.value();
 	}
 	emit downloadProgressUpdate(m_taskId, totalReceived);
+}
+
+void MultiThreadDownloader::updateStateToDatabase(int state)
+{
+	if (m_isDownloadEnded || m_isPaused) return;
+	TaskRepository repo;
+	qint64 total = std::accumulate(m_chunkDownloaded.begin(), m_chunkDownloaded.end(), 0LL);
+	repo.updateProgress(m_taskId, total);
+	repo.updateState(m_taskId, state);
+
+	QJsonArray chunksArray;
+	for (auto it = m_chunks.begin(); it != m_chunks.end(); ++it) {
+		QJsonObject obj;
+		obj["id"] = it->id;
+		obj["startByte"] = it->startByte;
+		obj["endByte"] = it->endByte;
+		obj["isEnded"] = it->isEnded;
+		obj["retryCount"] = it->retryCount;
+		obj["downloaded"] = m_chunkDownloaded.value(it.key(), 0);
+		obj["tempFilePath"] = it->tempFilePath;
+		obj["errorString"] = it->errorString;
+		obj["isSuccessful"] = it->isSuccessful;
+		chunksArray.append(obj);
+	}
+	QJsonDocument doc(chunksArray);
+	repo.updateChunks(m_taskId, doc.toJson(QJsonDocument::Compact));
 }
 
 void MultiThreadDownloader::cleanupTempFiles()
@@ -302,15 +459,12 @@ void MultiThreadDownloader::cleanupTempFiles()
 
 void MultiThreadDownloader::stopAllThreads()
 {
-	// 先断开所有 worker 的信号，避免后续事件
 	for (auto worker : m_workers) {
 		if (worker) {
 			disconnect(worker, nullptr, this, nullptr);
-			worker->cancel();
 		}
 	}
 
-	// 请求线程退出并等待
 	for (auto thread : m_threads) {
 		if (thread && thread->isRunning()) {
 			thread->quit();
@@ -318,10 +472,9 @@ void MultiThreadDownloader::stopAllThreads()
 		}
 	}
 
-	// 安全删除 worker 和 thread
 	qDeleteAll(m_workers);
 	m_workers.clear();
 	qDeleteAll(m_threads);
 	m_threads.clear();
-	m_workerIdle.clear();
+	m_workerStatus.clear();
 }

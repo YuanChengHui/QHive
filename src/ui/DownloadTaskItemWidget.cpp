@@ -17,10 +17,16 @@ DownloadTaskItemWidget::DownloadTaskItemWidget(const QString& taskId,
 	const QString& fileName,
 	const QString& savePath,
 	qint64 totalSize,
+	bool supportsRange,
 	QWidget* parent)
-	: QWidget(parent), m_taskId(taskId), m_taskUrl(url), m_fileName(fileName), m_savedPath(savePath), m_totalSize(totalSize)
+	: QWidget(parent), m_taskId(taskId), m_taskUrl(url), m_fileName(fileName),
+	m_savedPath(savePath), m_totalSize(totalSize), m_supportsRange(supportsRange)
 {
 	ui.setupUi(this);
+	ui.pauseButton->setToolTip(tr("暂停下载"));
+	ui.pauseButton->setIcon(QIcon(":/icons/pausedownload.png"));
+	ui.resumeButton->setToolTip(tr("继续下载"));
+	ui.resumeButton->setIcon(QIcon(":/icons/resumedownload.png"));
 	ui.cancelButton->setToolTip(tr("取消下载"));
 	ui.cancelButton->setIcon(QIcon(":/icons/canceldownload.png"));
 	ui.retryButton->setToolTip(tr("重试下载"));
@@ -56,7 +62,11 @@ void DownloadTaskItemWidget::initUI()
 	// 为了确保复选框本身不会直接处理鼠标事件（从而绕过父控件的统一逻辑），
 	// 当复选框可见时将其设置为透明接收鼠标事件，让父控件接收并处理鼠标事件。
 	ui.checkBox->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-	m_isDownloading = true;
+	m_isPaused = false;
+	m_isDownloadEnded = false;
+	if (!m_supportsRange) { showPauseButton(false); }
+	else { showPauseButton(true); }
+	showResumeButton(false);
 	showRetryButton(false);
 	showCancelButton(true);
 	showOpenFolderButton(false);
@@ -99,23 +109,6 @@ void DownloadTaskItemWidget::mousePressEvent(QMouseEvent* event)
 	}
 }
 
-void DownloadTaskItemWidget::resetForRetry()
-{
-	m_lastReceived = 0;
-	ui.progressBar->setValue(0);
-	ui.percentLabel->setText("0%");
-	ui.speedLabel->setText("0 B/s");
-	ui.speedLabel->setStyleSheet("");
-
-	m_isDownloading = true;
-	ui.checkBox->setVisible(false);
-	showCancelButton(true);
-	showRetryButton(false);
-	showOpenFolderButton(false);
-	updateStatus("border-radius: 4px;\nbackground-color: gray;");
-	m_lastTime.restart();
-}
-
 void DownloadTaskItemWidget::updateStatus(const QString& status)
 {
 	ui.statusLabel->setStyleSheet(status);
@@ -128,17 +121,7 @@ void DownloadTaskItemWidget::updateProgress(qint64 received)
 		updateSpeed(delta);
 	}
 	m_lastReceived = received;
-
-	if (m_totalSize > 0) {
-		int percent = static_cast<int>((static_cast<double>(received) / m_totalSize) * 100.0);
-		percent = std::clamp(percent, 0, 100);
-		ui.progressBar->setValue(percent);
-		ui.percentLabel->setText(QString("%1%").arg(percent));
-	}
-	else {
-		ui.progressBar->setRange(0, 0);
-		ui.percentLabel->setText(tr("已下载 %1").arg(formatBytes(received)));
-	}
+	setProgressState(received);
 }
 
 void DownloadTaskItemWidget::updateSpeed(qint64 delta)
@@ -148,6 +131,16 @@ void DownloadTaskItemWidget::updateSpeed(qint64 delta)
 
 	double speed = delta * 1000.0 / elapsed;
 	ui.speedLabel->setText(formatBytes(speed) + "/s");
+}
+
+void DownloadTaskItemWidget::showPauseButton(bool show)
+{
+	ui.pauseButton->setVisible(show);
+}
+
+void DownloadTaskItemWidget::showResumeButton(bool show)
+{
+	ui.resumeButton->setVisible(show);
 }
 
 void DownloadTaskItemWidget::showRetryButton(bool show)
@@ -165,36 +158,97 @@ void DownloadTaskItemWidget::showOpenFolderButton(bool show)
 	ui.openFolderButton->setVisible(show);
 }
 
-bool DownloadTaskItemWidget::isChecked()
+bool DownloadTaskItemWidget::isChecked() const
 {
 	return ui.checkBox->isChecked();
 }
 
+bool DownloadTaskItemWidget::isPaused() const
+{
+	return m_isPaused;
+}
+
 void DownloadTaskItemWidget::setCheckState(bool newState)
 {
-	if (m_isDownloading) {
+	if (!m_isDownloadEnded && !m_isPaused) {
 		ui.checkBox->setVisible(newState);
 		ui.checkBox->setChecked(newState);
 	}
 	else {
-		// 已完成或失败：复选框始终可见，保持可见并设置状态
+		// 已结束或暂停：复选框始终可见，保持可见并设置状态
 		ui.checkBox->setChecked(newState);
 	}
 	emit checkedStateChanged(newState);
 }
 
-void DownloadTaskItemWidget::setFailedUI()
+void DownloadTaskItemWidget::setPauseState()
+{
+	m_lastTime.invalidate();
+	updateStatus("border-radius: 4px;\nbackground-color: orange;");
+	m_isPaused = true;
+	m_isDownloadEnded = false;
+	if (!ui.checkBox->isVisible()) { ui.checkBox->setVisible(true); }
+	if (isChecked()) {
+		ui.checkBox->setChecked(false);
+		emit checkedStateChanged(false);
+	}
+	ui.speedLabel->setText(tr("已暂停"));
+	ui.speedLabel->setStyleSheet("color: orange;");
+	ui.pauseButton->setEnabled(true); // 恢复按钮可点击
+	showPauseButton(false);
+	showResumeButton(true);
+	showRetryButton(false);
+	showCancelButton(true);
+	showOpenFolderButton(true);
+}
+
+void DownloadTaskItemWidget::setResumeState()
+{
+	if (!m_supportsRange) {
+		setFailedState();
+		return;
+	}
+	m_lastTime.restart();
+	updateStatus("border-radius: 4px;\nbackground-color: gray;");
+	m_isPaused = false;
+	m_isDownloadEnded = false;
+	if (ui.checkBox->isVisible()) { ui.checkBox->setVisible(false); }
+	if (isChecked()) {
+		ui.checkBox->setChecked(false);
+		emit checkedStateChanged(false);
+	}
+	ui.speedLabel->setText(tr("正在下载..."));
+	ui.speedLabel->setStyleSheet("");
+	showPauseButton(true);
+	ui.resumeButton->setEnabled(true); // 恢复按钮可点击
+	showResumeButton(false);
+	showRetryButton(false);
+	showCancelButton(true);
+	showOpenFolderButton(false);
+}
+
+void DownloadTaskItemWidget::setFailedState()
 {
 	m_lastTime.invalidate();
 	updateStatus("border-radius: 4px;\nbackground-color: red;");
 
-	m_isDownloading = false;
+	m_isDownloadEnded = true;
+	if (!m_supportsRange) {
+		m_lastReceived = 0;
+	}
 	if (!ui.checkBox->isVisible()) { ui.checkBox->setVisible(true); }
-	if (isChecked()) { ui.checkBox->setChecked(false); }
+	if (isChecked()) {
+		ui.checkBox->setChecked(false);
+		emit checkedStateChanged(false);
+	}
 
 	ui.speedLabel->setText(tr("下载失败"));
 	ui.speedLabel->setStyleSheet("color: red;");
+
+	showPauseButton(false);
+	showResumeButton(false);
 	showRetryButton(true);
+	ui.cancelButton->setEnabled(true);
 	showCancelButton(false);
 	showOpenFolderButton(true);
 	if (m_totalSize <= 0) {
@@ -203,17 +257,22 @@ void DownloadTaskItemWidget::setFailedUI()
 	}
 }
 
-void DownloadTaskItemWidget::setSuccessUI()
+void DownloadTaskItemWidget::setSuccessState()
 {
 	m_lastTime.invalidate();
 	updateStatus("border-radius: 4px;\nbackground-color: green;");
 
-	m_isDownloading = false;
+	m_isDownloadEnded = true;
 	if (!ui.checkBox->isVisible()) { ui.checkBox->setVisible(true); }
-	if (isChecked()) { ui.checkBox->setChecked(false); }
+	if (isChecked()) {
+		ui.checkBox->setChecked(false);
+		emit checkedStateChanged(false);
+	}
 
 	ui.speedLabel->setText(tr("下载完成"));
 	ui.speedLabel->setStyleSheet("color: green;");
+	showPauseButton(false);
+	showResumeButton(false);
 	showRetryButton(false);
 	showCancelButton(false);
 	showOpenFolderButton(true);
@@ -223,14 +282,68 @@ void DownloadTaskItemWidget::setSuccessUI()
 	}
 }
 
+void DownloadTaskItemWidget::setProgressState(qint64 received)
+{
+	if (m_totalSize > 0) {
+		int percent = static_cast<int>((static_cast<double>(received) / m_totalSize) * 100.0);
+		percent = std::clamp(percent, 0, 100);
+		ui.progressBar->setValue(percent);
+		ui.percentLabel->setText(QString("%1%").arg(percent));
+	}
+	else {
+		ui.progressBar->setRange(0, 0);
+		ui.percentLabel->setText(tr("已下载 %1").arg(formatBytes(received)));
+	}
+}
+
+void DownloadTaskItemWidget::on_pauseButton_clicked()
+{
+	ui.pauseButton->setEnabled(false); // 防止重复点击
+	emit requestPause(m_taskId);
+}
+
+void DownloadTaskItemWidget::on_resumeButton_clicked()
+{
+	ui.resumeButton->setEnabled(false); // 防止重复点击
+	emit requestResume(m_taskId);
+}
+
 void DownloadTaskItemWidget::on_cancelButton_clicked()
 {
+	ui.cancelButton->setEnabled(false); // 防止重复点击
 	emit requestCancel(m_taskId);
 }
 
 void DownloadTaskItemWidget::on_retryButton_clicked()
 {
+	ui.retryButton->setEnabled(false); // 防止重复点击
 	emit requestRetry(m_taskId);
+}
+
+void DownloadTaskItemWidget::resetForRetry()
+{
+	ui.speedLabel->setText("0 B/s");
+	ui.speedLabel->setStyleSheet("");
+
+	m_isPaused = false;
+	m_isDownloadEnded = false;
+	setCheckState(false);
+	if (!m_supportsRange) {
+		m_lastReceived = 0;
+		showPauseButton(false);
+	}
+	else {
+		showPauseButton(true);
+	}
+	ui.progressBar->setValue(0);
+	ui.percentLabel->setText("0%");
+	showResumeButton(false);
+	showCancelButton(true);
+	ui.retryButton->setEnabled(true);
+	showRetryButton(false);
+	showOpenFolderButton(false);
+	updateStatus("border-radius: 4px;\nbackground-color: gray;");
+	m_lastTime.restart();
 }
 
 static void showInFolder(const QString& filePath)

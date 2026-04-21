@@ -9,5 +9,7 @@
         <file>icons/retrydownload.png</file>
         <file>icons/selectall.png</file>
         <file>icons/unfullyselected.png</file>
+        <file>icons/pausedownload.png</file>
+        <file>icons/resumedownload.png</file>
     </qresource>
 </RCC>

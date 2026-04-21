@@ -1,4 +1,5 @@
 ﻿#include "QHive.h"
+#include "TaskRepository.h"
 
 #include <QDir>
 #include <QList>
@@ -15,13 +16,7 @@ QHive::QHive(QWidget* parent)
 {
 	ui.setupUi(this);
 	setWindowIcon(QIcon(":/icons/title.png"));
-
-	addDownload = new QAction(QIcon(":/icons/addbutton.png"), tr("添加下载任务"), this);
-	ui.toolBar->addAction(addDownload);
-	removeTask = new QAction(QIcon(":/icons/removetask.png"), tr("清除下载任务"), this);
-	ui.toolBar->addAction(removeTask);
-	selectAll = new QAction(QIcon(":/icons/unfullyselected.png"), tr("全选"), this);
-	ui.toolBar->addAction(selectAll);
+	initToolbar();
 
 	m_downloadListArea = new QScrollArea(this);
 	m_downloadListArea->setWidgetResizable(true);
@@ -33,13 +28,31 @@ QHive::QHive(QWidget* parent)
 
 	httpClient = HttpClient::instance();
 	initConnections();
+
+	loadUnfinishedTasks();
 }
 
 QHive::~QHive() = default;
 
+void QHive::initToolbar()
+{
+	addDownload = new QAction(QIcon(":/icons/addbutton.png"), tr("添加下载任务"), this);
+	ui.toolBar->addAction(addDownload);
+	pauseDownload = new QAction(QIcon(":/icons/pausedownload.png"), tr("暂停下载"), this);
+	ui.toolBar->addAction(pauseDownload);
+	resumeDownload = new QAction(QIcon(":/icons/resumedownload.png"), tr("继续下载"), this);
+	ui.toolBar->addAction(resumeDownload);
+	selectAll = new QAction(QIcon(":/icons/unfullyselected.png"), tr("全选"), this);
+	ui.toolBar->addAction(selectAll);
+	removeTask = new QAction(QIcon(":/icons/removetask.png"), tr("清除下载任务"), this);
+	ui.toolBar->addAction(removeTask);
+}
+
 void QHive::initConnections()
 {
 	connect(addDownload, &QAction::triggered, this, &QHive::openDownloadDialog);
+	connect(pauseDownload, &QAction::triggered, this, &QHive::pauseAllTasks);
+	connect(resumeDownload, &QAction::triggered, this, &QHive::resumeAllTasks);
 	connect(removeTask, &QAction::triggered, this, &QHive::removeTaskListItem);
 	connect(selectAll, &QAction::triggered, this, &QHive::onSelectAllTriggered);
 
@@ -48,7 +61,8 @@ void QHive::initConnections()
 			QMessageBox::critical(this, tr("请求错误"), tr("错误信息:\n%1").arg(errorString));
 		});
 	connect(httpClient, &HttpClient::headRequestSuccess, this, &QHive::createDownloadTask);
-
+	connect(httpClient, &HttpClient::downloadPaused, this, &QHive::handleTaskPause);
+	connect(httpClient, &HttpClient::downloadResumed, this, &QHive::handleTaskResume);
 	connect(httpClient, &HttpClient::downloadFailed, this, &QHive::handleFailure);
 	connect(httpClient, &HttpClient::downloadSucceeded, this, &QHive::handleSuccess);
 	connect(httpClient, &HttpClient::updateDownloadProgress,
@@ -61,6 +75,35 @@ void QHive::initConnections()
 				qWarning() << "[QHive] 收到下载进度更新，但不存在对应的任务项，ID：" << taskId;
 			}
 		});
+}
+
+void QHive::loadUnfinishedTasks()
+{
+	TaskRepository repo;
+	auto tasks = repo.loadAllTasks();
+	for (const auto& task : tasks) {
+		// 重建 UI 项
+		createDownloadTask(task.taskId, task.url, task.fileName, task.savePath, task.totalSize, task.supportsRange);
+		auto* taskWidget = m_activeDownloads.value(task.taskId);
+		if (!taskWidget) continue;
+		// 根据状态设置 UI
+		taskWidget->setProgressState(task.downloadedBytes);
+
+		if (task.state == static_cast<int>(TaskRepository::TaskState::Downloading)) {
+			taskWidget->setResumeState();
+		}
+		else if (task.state == static_cast<int>(TaskRepository::TaskState::Paused)) {
+			taskWidget->setPauseState();
+		}
+		else if (task.state == static_cast<int>(TaskRepository::TaskState::Failed)) {
+			taskWidget->setFailedState();
+		}
+		else if (task.state == static_cast<int>(TaskRepository::TaskState::Completed)) {
+			taskWidget->setSuccessState();
+			m_taskResults.insert(task.taskId, true);
+		}
+		httpClient->restoreDownloadTask(task.taskId);
+	}
 }
 
 void QHive::openDownloadDialog()
@@ -84,8 +127,79 @@ void QHive::openDownloadDialog()
 	}
 }
 
+void QHive::createDownloadTask(const QString& taskId, const QUrl& taskUrl, const QString& fileName,
+	const QString& fullSavePath, qint64 totalSize, bool supportsRange)
+{
+	if (m_activeDownloads.contains(taskId)) {
+		qWarning() << "[QHive] 任务 ID 已存在，拒绝重复创建 UI:" << taskId;
+		return;
+	}
+	auto* taskWidget = new DownloadTaskItemWidget(taskId, taskUrl, fileName, fullSavePath, totalSize, supportsRange, this);
+	m_downloadListLayout->addWidget(taskWidget);
+	m_activeDownloads.insert(taskId, taskWidget);
+	m_taskResults.insert(taskId, false);
+
+	connect(taskWidget, &DownloadTaskItemWidget::requestPause, this, &QHive::onTaskPause);
+	connect(taskWidget, &DownloadTaskItemWidget::requestResume, this, &QHive::onTaskResume);
+	connect(taskWidget, &DownloadTaskItemWidget::requestCancel, this, &QHive::onTaskCancell);
+	connect(taskWidget, &DownloadTaskItemWidget::requestRetry, this, &QHive::onTaskRetry);
+	connect(taskWidget, &DownloadTaskItemWidget::checkedStateChanged, this, &QHive::onCheckedStateChanged);
+}
+
+void QHive::pauseAllTasks()
+{
+	if (m_selectedCount == 0 || m_activeDownloads.isEmpty()) return;
+
+	QList<QString> toPause;
+	for (auto it = m_activeDownloads.begin(); it != m_activeDownloads.end(); ++it) {
+		if (it.value()->isChecked()) {
+			if (it.value()->isDownloading() && !it.value()->isPaused()) {
+				toPause.append(it.key());
+			}
+			else {
+				it.value()->setCheckState(false);
+			}
+		}
+	}
+	if (toPause.isEmpty()) {
+		QMessageBox::information(this, tr("没有正在下载项"), tr("请先选择要暂停的下载任务。"));
+		return;
+	}
+
+	for (const QString& taskId : toPause) {
+		httpClient->pauseDownload(taskId);
+	}
+}
+
+void QHive::resumeAllTasks()
+{
+	if (m_selectedCount == 0 || m_activeDownloads.isEmpty()) return;
+
+	QList<QString> toResume;
+
+	for (auto it = m_activeDownloads.begin(); it != m_activeDownloads.end(); ++it) {
+		if (it.value()->isChecked()) {
+			if (it.value()->isDownloading() && it.value()->isPaused()) {
+				toResume.append(it.key());
+			}
+			else {
+				it.value()->setCheckState(false);
+			}
+		}
+	}
+	if (toResume.isEmpty()) {
+		QMessageBox::information(this, tr("没有暂停项"), tr("请先选择要恢复的下载任务。"));
+		return;
+	}
+
+	for (const QString& taskId : toResume) {
+		httpClient->resumeDownload(taskId);
+	}
+}
+
 void QHive::removeTaskListItem()
 {
+	if (m_selectedCount == 0 || m_activeDownloads.isEmpty()) return;
 	QList<QString> toDelete;
 	QList<QString> downloadingTasks;
 	for (auto it = m_activeDownloads.begin(); it != m_activeDownloads.end(); ++it) {
@@ -95,10 +209,6 @@ void QHive::removeTaskListItem()
 				downloadingTasks.append(it.key());
 			}
 		}
-	}
-	if (toDelete.isEmpty()) {
-		QMessageBox::information(this, tr("没有选中项"), tr("请先选择要清除的下载任务。"));
-		return;
 	}
 
 	// 如果有正在下载的任务，弹出确认框
@@ -128,32 +238,40 @@ void QHive::removeTaskListItem()
 		m_activeDownloads.remove(taskId);
 		m_taskResults.remove(taskId);
 		taskWidget->deleteLater();
+		taskWidget = nullptr;
+
+		TaskRepository().deleteTask(taskId);				
 	}
 	updateSelectAllAction();
 }
 
-void QHive::createDownloadTask(const QString& taskId,
-	const QUrl& taskUrl,
-	const QString& fileName,
-	const QString& fullSavePath,
-	qint64 totalSize)
+void QHive::handleTaskPause(const QString& taskId)
 {
-	auto* taskWidget = new DownloadTaskItemWidget(taskId, taskUrl, fileName, fullSavePath, totalSize, this);
-	m_downloadListLayout->addWidget(taskWidget);
-	m_activeDownloads.insert(taskId, taskWidget);
-	m_taskResults.insert(taskId, false);
+	auto* taskWidget = m_activeDownloads.value(taskId);
+	if (taskWidget) {
+		taskWidget->setPauseState();
+	}
+	else {
+		qWarning() << "[QHive] 报告了下载暂停，但不存在对应的任务项，ID：" << taskId;
+	}
+}
 
-	connect(taskWidget, &DownloadTaskItemWidget::requestRetry, this, &QHive::onTaskRetry);
-	connect(taskWidget, &DownloadTaskItemWidget::requestCancel, this, &QHive::onTaskCancelled);
-
-	connect(taskWidget, &DownloadTaskItemWidget::checkedStateChanged, this, &QHive::onCheckedStateChanged);
+void QHive::handleTaskResume(const QString& taskId)
+{
+	auto* taskWidget = m_activeDownloads.value(taskId);
+	if (taskWidget) {
+		taskWidget->setResumeState();
+	}
+	else {
+		qWarning() << "[QHive] 报告了下载恢复，但不存在对应的任务项，ID：" << taskId;
+	}
 }
 
 void QHive::handleFailure(const QString& taskId, const QString& savedPath, const QString& errorString)
 {
 	auto* taskWidget = m_activeDownloads.value(taskId);
 	if (taskWidget) {
-		taskWidget->setFailedUI();
+		taskWidget->setFailedState();
 		QMessageBox::critical(this, tr("下载失败"), tr("下载失败：\n文件：%1\n错误：%2").arg(savedPath, errorString));
 	}
 	else {
@@ -166,7 +284,7 @@ void QHive::handleSuccess(const QString& taskId, const QString& savedPath)
 	auto* taskWidget = m_activeDownloads.value(taskId);
 	if (taskWidget) {
 		m_taskResults[taskId] = true;
-		taskWidget->setSuccessUI();
+		taskWidget->setSuccessState();
 		QMessageBox::information(this, tr("下载成功"), tr("文件已成功保存至：\n%1").arg(savedPath));
 	}
 	else {
@@ -174,7 +292,27 @@ void QHive::handleSuccess(const QString& taskId, const QString& savedPath)
 	}
 }
 
-void QHive::onTaskCancelled(const QString& taskId)
+void QHive::onTaskPause(const QString& taskId)
+{
+	if (m_activeDownloads.contains(taskId)) {
+		httpClient->pauseDownload(taskId);
+	}
+	else {
+		qWarning() << "暂停下载失败，找不到任务项，ID：" << taskId;
+	}
+}
+
+void QHive::onTaskResume(const QString& taskId)
+{
+	if (m_activeDownloads.contains(taskId)) {
+		httpClient->resumeDownload(taskId);
+	}
+	else {
+		qWarning() << "恢复下载失败，找不到任务项，ID：" << taskId;
+	}
+}
+
+void QHive::onTaskCancell(const QString& taskId)
 {
 	if (m_activeDownloads.contains(taskId)) {
 		httpClient->cancelDownload(taskId);
@@ -217,7 +355,17 @@ void QHive::onSelectAllTriggered()
 	else {
 		m_selectedCount = m_activeDownloads.size();
 	}
+	updateSelectAllAction();
+}
 
+void QHive::onCheckedStateChanged(bool checked)
+{
+	if (checked) {
+		m_selectedCount = qMin<int>(m_selectedCount + 1, m_activeDownloads.size());
+	}
+	else {
+		m_selectedCount = qMax(0, m_selectedCount - 1);
+	}
 	updateSelectAllAction();
 }
 
@@ -241,13 +389,3 @@ void QHive::updateSelectAllAction()
 	}
 }
 
-void QHive::onCheckedStateChanged(bool checked)
-{
-	if (checked) {
-		m_selectedCount = qMin<int>(m_selectedCount + 1, m_activeDownloads.size());
-	}
-	else {
-		m_selectedCount = qMax(0, m_selectedCount - 1);
-	}
-	updateSelectAllAction();
-}

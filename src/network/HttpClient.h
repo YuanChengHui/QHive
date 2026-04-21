@@ -14,6 +14,9 @@ class HttpClient : public QObject
 public:
 	static HttpClient* instance();
 
+	void restoreDownloadTask(const QString& taskId);
+	void pauseDownload(const QString& taskId);
+	void resumeDownload(const QString& taskId);
 	void cancelDownload(const QString& taskId);
 	void retryDownload(const QString& taskId);
 	void cleanTaskResources(const QString& taskId);
@@ -25,18 +28,21 @@ signals:
 		const QUrl& url,
 		const QString& fileName,
 		const QString& fullSavePath,
-		qint64 totalSize);
+		qint64 totalSize,
+		bool supportsRange);
 
 	void downloadFailed(const QString& taskId, const QString& savePath, const QString& errorString);
 	void downloadSucceeded(const QString& taskId, const QString& savePath);
 	void updateDownloadProgress(const QString& taskId, qint64 received);
+	void downloadPaused(const QString& taskId);
+	void downloadResumed(const QString& taskId);
 
 private slots:
 	void handleResult(const QString& taskId, bool errorOccurred, const QString& errorString, const QString& savePath);
 
 private:
 	explicit HttpClient(QObject* parent = nullptr);
-	~HttpClient() override;
+	~HttpClient() = default;
 	HttpClient(const HttpClient&) = delete;
 	HttpClient& operator=(const HttpClient&) = delete;
 
@@ -45,6 +51,18 @@ private:
 		bool supportsRange,
 		qint64 totalSize,
 		const QString& fullSavePath);
+
+	MultiThreadDownloader* createMultiDownloader(const QString& taskId,
+		const QString& fullSavePath,
+		const QUrl& url,
+		qint64 totalSize,
+		int threadCount);
+
+	SingleThreadDownloader* createSingleDownloader(const QString& taskId,
+		const QString& fullSavePath,
+		const QUrl& url,
+		qint64 totalSize,
+		bool supportsRange);
 
 	void startMultiDownload(const QString& taskId,
 		const QString& fullSavePath,
@@ -55,7 +73,8 @@ private:
 	void startSingleDownload(const QString& taskId,
 		const QString& fullSavePath,
 		const QUrl& taskUrl,
-		qint64 totalSize);
+		qint64 totalSize,
+		bool supportsRange);
 
 	MultiThreadDownloader* findMultiDownloadTask(const QString& taskId);
 	SingleThreadDownloader* findSingleDownloadTask(const QString& taskId);

@@ -9,88 +9,108 @@ DownloadWorker::DownloadWorker(int id, QObject* parent)
 	, m_startByte(0)
 	, m_endByte(0)
 	, m_downloadedBytes(0)
-	, m_file(nullptr)
+	, m_tempFile(nullptr)
 	, m_chunkId(-1)
-	, m_cancelled(false)
-	, m_running(false)
+	, m_failed(false)
+	, m_canceled(false)
+	, m_paused(false)
+	, m_isWorking(false)
 {
 }
 
 DownloadWorker::~DownloadWorker()
 {
-	if (m_reply) {
-		m_reply->disconnect(this);
-		m_reply->abort();
-		m_reply->deleteLater();
-		m_reply = nullptr;
-	}
-	if (m_file) {
-		if (m_file->isOpen()) {
-			m_file->close();
-		}
-		delete m_file;
-		m_file = nullptr;
-	}
+	cleanup();
 }
 
-void DownloadWorker::startWorking()
+void DownloadWorker::requestChunk()
 {
 	// 线程已启动，请求分片
 	emit needChunk();
 }
 
 void DownloadWorker::startDownload(const QUrl& url, qint64 startByte, qint64 endByte,
-	const QString& tempFilePath, int chunkId)
+	const QString& tempFilePath, int chunkId, qint64 downloadedBytes)
 {
-	if (m_running) {
-		qWarning() << tr("Worker %1 已经在运行").arg(m_id);
+	m_isWorking = true;
+	m_failed = false;
+
+	m_url = url;
+	m_chunkId = chunkId;
+	m_startByte = startByte;
+	m_endByte = endByte;
+	m_downloadedBytes = downloadedBytes;          // 外部传入已下载量
+	m_tempFilePath = tempFilePath;
+
+	QIODevice::OpenMode mode = QIODevice::WriteOnly;
+	if (m_downloadedBytes > 0) {
+		mode |= QIODevice::Append;                // 续传模式
+	}
+	else {
+		mode |= QIODevice::Truncate;              // 全新下载
+	}
+
+	m_tempFile = new QFile(m_tempFilePath);
+	if (!m_tempFile->open(mode)) {
+		QString fileErr = m_tempFile->errorString();
+		delete m_tempFile;
+		m_tempFile = nullptr;
+		m_failed = true;
+		m_isWorking = false;
+		emit workEnded(m_chunkId, false, tr("无法创建临时文件: %1").arg(fileErr));
 		return;
 	}
 
-	m_url = url;
-	m_startByte = startByte;
-	m_endByte = endByte;
-	m_tempFilePath = tempFilePath;
-	m_chunkId = chunkId;
-	m_downloadedBytes = 0;
-	m_cancelled = false;
-	m_running = true;
-
-	// 打开临时文件（写入模式，存在则覆盖）
-	m_file = new QFile(m_tempFilePath);
-	if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-		QString fileErr = m_file->errorString();
-		delete m_file;
-		m_file = nullptr;
-		m_running = false;
-		emit chunkFinished(m_chunkId, false, tr("无法创建临时文件: %1").arg(fileErr));
+	// 如果是续传，验证文件大小一致性
+	if (m_downloadedBytes > 0 && m_tempFile->size() != m_downloadedBytes) {
+		qWarning() << "Worker" << m_id << "临时文件大小不一致，重新开始";
+		m_tempFile->close();
+		m_tempFile->remove();
+		delete m_tempFile;
+		m_tempFile = nullptr;
+		// 递归调用自身，从头开始
+		startDownload(url, startByte, endByte, tempFilePath, chunkId, 0);
 		return;
 	}
 
 	QNetworkRequest request(m_url);
-	QByteArray range = "bytes=" + QByteArray::number(startByte) + "-" + QByteArray::number(endByte);
+	qint64 requestStart = m_startByte + m_downloadedBytes;
+	QByteArray range = "bytes=" + QByteArray::number(requestStart) + "-" + QByteArray::number(m_endByte);
 	request.setRawHeader("Range", range);
+	request.setAttribute(QNetworkRequest::HttpPipeliningAllowedAttribute, true);
+	request.setRawHeader("Connection", "keep-alive");
 	request.setTransferTimeout(30000);
 	request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
 	m_reply = m_manager->get(request);
 	if (!m_reply) {
-		emit chunkFinished(m_chunkId, false, tr("无法发起网络请求"));
+		m_failed = true;
+		m_isWorking = false;
+		emit workEnded(m_chunkId, false, tr("无法发起网络请求"));
 		return;
 	}
 	connect(m_reply, &QNetworkReply::readyRead, this, &DownloadWorker::onReadyRead);
 	connect(m_reply, &QNetworkReply::finished, this, &DownloadWorker::onFinished);
 	connect(m_reply, &QNetworkReply::errorOccurred, this, [this](QNetworkReply::NetworkError code) {
+		m_failed = true;
 		qWarning() << "Worker" << m_id << "网络错误:" << code;
 		});
 	m_lastProgressTime.start();
 }
 
+void DownloadWorker::pause()
+{
+	if (m_paused) return;
+	m_paused = true;
+	if (m_reply) {
+		m_reply->abort();
+	}
+}
+
 void DownloadWorker::cancel()
 {
-	if (m_cancelled) return;
-	m_cancelled = true;
-	m_running = false;
-
+	if (m_canceled) return;
+	m_canceled = true;
 	if (m_reply) {
 		m_reply->abort();
 	}
@@ -98,66 +118,83 @@ void DownloadWorker::cancel()
 
 void DownloadWorker::onReadyRead()
 {
-	if (m_cancelled || !m_reply || !m_file || !m_file->isOpen()) return;
+	if (m_paused || m_canceled || m_failed) return;
 
 	QByteArray data = m_reply->readAll();
 	if (data.isEmpty()) return;
 
-	qint64 written = m_file->write(data);
+	qint64 written = m_tempFile->write(data);
 	if (written > 0) {
 		m_downloadedBytes += written;
-		// 时间节流
 		if (!m_lastProgressTime.isValid() || m_lastProgressTime.elapsed() >= PROGRESS_INTERVAL_MS) {
-			emit chunkProgress(m_chunkId, m_downloadedBytes);
+			emit workUpdated(m_chunkId, m_downloadedBytes);
 			m_lastProgressTime.restart();
 		}
 	}
 	else {
 		qWarning() << "Worker" << m_id << "写入临时文件失败";
+		// 写入失败，终止当前分片任务
+		m_failed = true;
+		if (m_reply) {
+			m_reply->abort();
+		}
 	}
 }
 
 void DownloadWorker::onFinished()
 {
+	m_lastProgressTime.invalidate(); // 请求结束后不再更新进度时间
 	if (!m_reply) {
-		emit chunkFinished(m_chunkId, false, tr("网络请求异常结束"));
-		m_running = false;
+		m_isWorking = false;
+		emit workUpdated(m_chunkId, m_downloadedBytes);
+		emit workEnded(m_chunkId, false, tr("网络请求异常结束"));
+		return;
+	}
+	if (m_paused) {
+		cleanup();
+		emit workUpdated(m_chunkId, m_downloadedBytes);
+		emit workPaused(m_chunkId, m_isWorking);
+		return;
+	}
+	bool success = false;
+	QString errorString;
+	m_isWorking = false;
+
+	if (m_canceled) {
+		errorString = tr("已取消");
+		cleanup();
+		emit workUpdated(m_chunkId, m_downloadedBytes);
+		emit workEnded(m_chunkId, success, errorString);
 		return;
 	}
 
-	bool success = false;
-	QString errorString;
-
-	if (!m_cancelled && m_reply->error() == QNetworkReply::NoError) {
-		// 确保最后的数据被写入
+	if (!m_failed) {
 		if (m_reply->bytesAvailable() > 0) {
 			onReadyRead();
 		}
-		if (m_file) {
-			m_file->flush();
-			m_file->close();
-		}
+		cleanup();
 		success = true;
 	}
 	else {
-		errorString = m_cancelled ? tr("已取消") : m_reply->errorString();
-		if (m_file) {
-			m_file->close();
-			m_file->remove(); // 删除不完整的临时文件
-		}
+		errorString = m_reply->errorString();
+		cleanup();
 	}
+	emit workUpdated(m_chunkId, m_downloadedBytes);
+	emit workEnded(m_chunkId, success, errorString);
+}
 
-	// 发送最终进度
-	emit chunkProgress(m_chunkId, m_downloadedBytes);
-
-	delete m_file;
-	m_file = nullptr;
-
+void DownloadWorker::cleanup()
+{
+	if (m_tempFile) {
+		if (m_tempFile->isOpen()) {
+			m_tempFile->close();
+		}
+		delete m_tempFile;
+		m_tempFile = nullptr;
+	}
 	if (m_reply) {
+		m_reply->disconnect(this);
 		m_reply->deleteLater();
 		m_reply = nullptr;
 	}
-
-	m_running = false;
-	emit chunkFinished(m_chunkId, success, errorString);
 }

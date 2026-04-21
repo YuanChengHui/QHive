@@ -26,6 +26,7 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
     Widgets 
     Network
     Concurrent
+    Sql
 )
 
 # ============================== 源文件 ==============================
@@ -58,6 +59,12 @@ set(SOURCES
     src/ui/QHive.h
     src/ui/QHive.ui
 
+    # database 模块
+    src/database/DatabaseManager.cpp
+    src/database/DatabaseManager.h
+    src/database/TaskRepository.cpp
+    src/database/TaskRepository.h
+
     # utils 模块（目前为空）
     # src/utils/...
 )
@@ -79,6 +86,7 @@ target_include_directories(${PROJECT_NAME}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/network
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
         ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/database
 )
 
 # 链接库
@@ -89,6 +97,7 @@ target_link_libraries(${PROJECT_NAME}
         Qt::Widgets
         Qt::Network
         Qt::Concurrent
+        Qt::Sql 
 )
 
 # Windows GUI应用
