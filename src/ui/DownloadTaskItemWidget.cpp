@@ -268,7 +268,8 @@ void DownloadTaskItemWidget::setSuccessState()
 		ui.checkBox->setChecked(false);
 		emit checkedStateChanged(false);
 	}
-
+	ui.progressBar->setValue(100);
+	ui.percentLabel->setText("100%");
 	ui.speedLabel->setText(tr("下载完成"));
 	ui.speedLabel->setStyleSheet("color: green;");
 	showPauseButton(false);

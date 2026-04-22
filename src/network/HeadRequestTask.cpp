@@ -14,12 +14,13 @@
 HeadRequestTask::HeadRequestTask(const QUrl& url,
 	const QString& fileName,
 	const QString& saveDir,
+	QNetworkAccessManager* networkManager,
 	QObject* parent)
 	: QObject(parent)
 	, m_url(url)
 	, m_fileName(fileName)
 	, m_saveDir(saveDir)
-	, m_networkManager(new QNetworkAccessManager(this))
+	, m_networkManager(networkManager)
 {
 	m_retryTimer.setSingleShot(true);
 	connect(&m_retryTimer, &QTimer::timeout, this, &HeadRequestTask::retryRequest);
@@ -51,7 +52,9 @@ void HeadRequestTask::startRequest()
 
 	QNetworkRequest request(m_url);
 	request.setTransferTimeout(10000);
-	request.setRawHeader("Accept-Encoding", "gzip, deflate, br");
+	request.setRawHeader("Accept", "*/*");
+	request.setRawHeader("Connection", "keep-alive");
+	request.setRawHeader("Accept-Encoding", "identity");
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 	request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
 
@@ -111,7 +114,7 @@ void HeadRequestTask::onReplyFinished(QNetworkReply* reply)
 	if (m_retryCount < MAX_RETRIES) {
 		m_retryCount++;
 		int delay = 1000 * (1 << (m_retryCount - 1)); // 指数退避
-		qDebug() << "[HeadRequestTask] HEAD 请求失败，将在" << delay << "ms后重试(第" << m_retryCount << "次)";
+		qDebug() << "[HeadRequestTask] HEAD 请求失败，将在" << delay / 1000 << "s后重试(第" << m_retryCount << "次)";
 		m_retryTimer.start(delay);
 	}
 	else {

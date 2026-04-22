@@ -13,6 +13,7 @@
 
 HttpClient::HttpClient(QObject* parent)
 	: QObject(parent)
+	, m_networkManager(new QNetworkAccessManager(this))
 {
 }
 
@@ -33,14 +34,10 @@ HttpClient* HttpClient::instance()
 
 void HttpClient::headRequest(const QString& taskId, const QUrl& url, const QString& initialFileName, const QString& saveDir)
 {
-	QThread* headThread = new QThread;
-	HeadRequestTask* headTask = new HeadRequestTask(url, initialFileName, saveDir);
-	headTask->moveToThread(headThread);
+	HeadRequestTask* headTask = new HeadRequestTask(url, initialFileName, saveDir, m_networkManager);
 
-	connect(headThread, &QThread::started, headTask, &HeadRequestTask::startRequest);
-	connect(headThread, &QThread::finished, headThread, &QObject::deleteLater);
 	connect(headTask, &HeadRequestTask::headRequestCompleted, this,
-		[this, taskId, url, headThread, headTask](const QString& fileName, const QString& fullSavePath,
+		[this, taskId, url,  headTask](const QString& fileName, const QString& fullSavePath,
 			const QString& errorString, qint64 totalSize, bool hasError, bool supportsRange) {
 				if (hasError) {
 					emit headRequestError(errorString);
@@ -50,10 +47,8 @@ void HttpClient::headRequest(const QString& taskId, const QUrl& url, const QStri
 					launchDownload(taskId, url, supportsRange, totalSize, fullSavePath);
 				}
 				headTask->deleteLater();
-				headThread->quit();
 		});
-
-	headThread->start();
+	headTask->startRequest();
 }
 
 void HttpClient::launchDownload(const QString& taskId, const QUrl& url, bool supportsRange, qint64 totalSize, const QString& fullSavePath)

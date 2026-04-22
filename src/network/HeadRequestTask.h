@@ -14,6 +14,7 @@ public:
 	explicit HeadRequestTask(const QUrl& url,
 		const QString& fileName,
 		const QString& saveDir,
+		QNetworkAccessManager* networkManager,
 		QObject* parent = nullptr);
 	~HeadRequestTask() override;
 

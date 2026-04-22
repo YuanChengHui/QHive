@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QUrl>
 #include <QHash>
+#include <QNetworkAccessManager>
 
 class HttpClient : public QObject
 {
@@ -45,6 +46,8 @@ private:
 	~HttpClient() = default;
 	HttpClient(const HttpClient&) = delete;
 	HttpClient& operator=(const HttpClient&) = delete;
+
+	QNetworkAccessManager* m_networkManager = nullptr;
 
 	void launchDownload(const QString& taskId,
 		const QUrl& url,

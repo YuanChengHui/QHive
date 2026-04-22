@@ -69,7 +69,7 @@ void SingleThreadDownloader::restoreFailedState(qint64 downloadedBytes)
 	m_errorOccurred = true;
 	m_isDownloadEnded = true;
 	m_errorString = tr("下载失败！");
-	if (m_supportsRange && m_totalSize > 0) {
+	if (m_isResumable) {
 		m_bytesReceived = downloadedBytes;
 	}
 	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
@@ -77,7 +77,7 @@ void SingleThreadDownloader::restoreFailedState(qint64 downloadedBytes)
 
 void SingleThreadDownloader::restoreDownloadingState(qint64 downloadedBytes)
 {
-	if (m_supportsRange && m_totalSize > 0) {
+	if (m_isResumable) {
 		m_bytesReceived = downloadedBytes;
 	}
 	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
@@ -91,7 +91,7 @@ void SingleThreadDownloader::start()
 	}
 
 	m_file = new QFile(m_fullSavePath);
-	if (!m_file->open(QIODevice::WriteOnly)) {
+	if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
 		m_isDownloadEnded = true;
 		m_errorOccurred = true;
 		m_errorString = m_file->errorString();
@@ -191,6 +191,9 @@ void SingleThreadDownloader::cancel()
 	m_errorString = tr("下载已取消！");
 	if (m_isPaused) {
 		m_isPaused = false;
+		if (QFile::exists(m_fullSavePath)) {
+			QFile::remove(m_fullSavePath);
+		}
 		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 		emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 		return;
@@ -205,7 +208,14 @@ void SingleThreadDownloader::cancel()
 void SingleThreadDownloader::retry()
 {
 	if (!m_errorOccurred) return;
+	if (m_file) {
+		if (m_file->isOpen()) m_file->close();
+		delete m_file;
+		m_file = nullptr;
+	}
 	m_file = new QFile(m_fullSavePath);
+	m_retryCount = 0;
+
 	bool fileExists = QFile::exists(m_fullSavePath);
 	if (m_isCanceled) {
 		if (fileExists) {
@@ -213,6 +223,7 @@ void SingleThreadDownloader::retry()
 		}
 		m_bytesReceived = 0;
 		if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+			m_isCanceled = false;
 			m_errorString = m_file->errorString();
 			qCritical() << m_taskId << ":无法打开文件进行重试:" << m_errorString;
 			emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
@@ -227,6 +238,7 @@ void SingleThreadDownloader::retry()
 			m_bytesReceived = 0;
 		}
 		if (!m_file->open(QIODevice::Append)) {
+			m_isCanceled = false;
 			m_errorString = m_file->errorString();
 			qCritical() << m_taskId << ":无法打开文件进行重试:" << m_errorString;
 			emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
@@ -237,7 +249,6 @@ void SingleThreadDownloader::retry()
 	m_isCanceled = false;
 	m_errorOccurred = false;
 	m_requestAborted = false;
-	m_retryCount = 0;
 	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
 	startNetworkRequest(m_bytesReceived);
 	m_dbSaveTimer.restart();
@@ -251,11 +262,13 @@ void SingleThreadDownloader::startNetworkRequest(qint64 startByte)
 	}
 
 	QNetworkRequest request(m_url);
-	request.setTransferTimeout(30000);
+	request.setTransferTimeout(15000);
+	request.setRawHeader("Accept", "*/*");
+	request.setRawHeader("Accept-Encoding", "identity");
 	request.setRawHeader("Connection", "keep-alive");
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-	request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-	if (m_supportsRange && m_totalSize > 0) {
+	request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+	if (m_isResumable) {
 		request.setRawHeader("Range", QString("bytes=%1-").arg(startByte).toUtf8());
 	}
 
@@ -378,15 +391,19 @@ void SingleThreadDownloader::onFinished()
 	}
 	if (m_file && m_file->isOpen()) {
 		m_file->flush();
-		m_bytesReceived = m_file->size();
 	}
+	emit downloadProgressUpdate(m_taskId, m_bytesReceived);
+	emit needSaveProgress(m_taskId, m_bytesReceived);
 	cleanupFile();
+	if (m_isCanceled) {
+		if (QFile::exists(m_fullSavePath)) {
+			QFile::remove(m_fullSavePath);
+		}
+	}
 	if (m_reply) {
 		m_reply->deleteLater();
 		m_reply = nullptr;
 	}
-	emit downloadProgressUpdate(m_taskId, m_bytesReceived);
-	emit needSaveProgress(m_taskId, m_bytesReceived);
 	emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 }
 

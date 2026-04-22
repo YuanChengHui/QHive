@@ -77,10 +77,12 @@ void DownloadWorker::startDownload(const QUrl& url, qint64 startByte, qint64 end
 	qint64 requestStart = m_startByte + m_downloadedBytes;
 	QByteArray range = "bytes=" + QByteArray::number(requestStart) + "-" + QByteArray::number(m_endByte);
 	request.setRawHeader("Range", range);
-	request.setAttribute(QNetworkRequest::HttpPipeliningAllowedAttribute, true);
 	request.setRawHeader("Connection", "keep-alive");
-	request.setTransferTimeout(30000);
-	request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+	request.setTransferTimeout(15000);
+	request.setRawHeader("Accept", "*/*");
+	request.setRawHeader("Accept-Encoding", "identity");
+	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+	request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
 
 	m_reply = m_manager->get(request);
 	if (!m_reply) {
