@@ -57,8 +57,8 @@ void QHive::initConnections()
 	connect(selectAll, &QAction::triggered, this, &QHive::onSelectAllTriggered);
 
 	connect(httpClient, &HttpClient::headRequestError, this,
-		[this](const QString& errorString) {
-			QMessageBox::critical(this, tr("请求错误"), tr("错误信息:\n%1").arg(errorString));
+		[this](const QUrl& url, const QString& errorString) {
+			QMessageBox::critical(this, tr("请求错误"), tr("URL: %1\n错误信息:\n%2").arg(url.toString()).arg(errorString));
 		});
 	connect(httpClient, &HttpClient::headRequestSuccess, this, &QHive::createDownloadTask);
 	connect(httpClient, &HttpClient::downloadPaused, this, &QHive::handleTaskPause);
@@ -240,7 +240,7 @@ void QHive::removeTaskListItem()
 		taskWidget->deleteLater();
 		taskWidget = nullptr;
 
-		TaskRepository().deleteTask(taskId);				
+		TaskRepository().deleteTask(taskId);
 	}
 	updateSelectAllAction();
 }

@@ -37,10 +37,10 @@ void HttpClient::headRequest(const QString& taskId, const QUrl& url, const QStri
 	HeadRequestTask* headTask = new HeadRequestTask(url, initialFileName, saveDir, m_networkManager);
 
 	connect(headTask, &HeadRequestTask::headRequestCompleted, this,
-		[this, taskId, url,  headTask](const QString& fileName, const QString& fullSavePath,
+		[this, taskId, url, headTask](const QString& fileName, const QString& fullSavePath,
 			const QString& errorString, qint64 totalSize, bool hasError, bool supportsRange) {
 				if (hasError) {
-					emit headRequestError(errorString);
+					emit headRequestError(url, errorString);
 				}
 				else {
 					emit headRequestSuccess(taskId, url, fileName, fullSavePath, totalSize, supportsRange);
@@ -126,13 +126,8 @@ SingleThreadDownloader* HttpClient::createSingleDownloader(const QString& taskId
 	qint64 totalSize,
 	bool supportsRange)
 {
-	auto* downloader = new SingleThreadDownloader(fullSavePath, url, totalSize, taskId, supportsRange, nullptr);
+	auto* downloader = new SingleThreadDownloader(fullSavePath, url, totalSize, taskId, supportsRange, m_networkManager, nullptr);
 
-	QThread* thread = new QThread;
-	downloader->moveToThread(thread);
-
-	connect(thread, &QThread::started, downloader, &SingleThreadDownloader::start);
-	connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 	connect(downloader, &SingleThreadDownloader::downloadPaused, this, [this](const QString& tid) {
 		emit downloadPaused(tid);
 		});
@@ -144,17 +139,6 @@ SingleThreadDownloader* HttpClient::createSingleDownloader(const QString& taskId
 		[this](const QString& tid, qint64 received) {
 			emit updateDownloadProgress(tid, received);
 		});
-
-	connect(downloader, &SingleThreadDownloader::needSaveProgress,
-		this, [this](const QString& tid, qint64 progress) {
-			TaskRepository().updateProgress(tid, progress);
-		});
-
-	connect(downloader, &SingleThreadDownloader::needSaveState,
-		this, [this](const QString& tid, int state) {
-			TaskRepository().updateState(tid, state);
-		});
-
 	return downloader;
 }
 
@@ -173,7 +157,7 @@ void HttpClient::startSingleDownload(const QString& taskId, const QString& fullS
 	if (m_activeSingleDownloads.contains(taskId)) return;
 	auto* downloader = createSingleDownloader(taskId, fullSavePath, taskUrl, totalSize, supportsRange);
 	m_activeSingleDownloads.insert(taskId, downloader);
-	downloader->thread()->start();
+	downloader->start();
 }
 
 void HttpClient::restoreDownloadTask(const QString& taskId)
@@ -219,11 +203,11 @@ void HttpClient::restoreDownloadTask(const QString& taskId)
 				downloader->restoreDownloadingState(info.downloadedBytes);
 			}
 			else {
-				downloader->thread()->start();   // 不支持断点续传，直接启动线程下载
+				downloader->start();   // 不支持断点续传，直接启动线程下载
 			}
 		}
 		else {
-			downloader->thread()->start();   // 其他状态，直接启动线程下载
+			downloader->start();   // 其他状态，直接启动线程下载
 		}
 	}
 }
@@ -252,8 +236,7 @@ void HttpClient::cleanTaskResources(const QString& taskId)
 		SingleThreadDownloader* singleDownloader = findSingleDownloadTask(taskId);
 		if (singleDownloader) {
 			m_activeSingleDownloads.remove(taskId);
-			singleDownloader->deleteLater(); // 让 Qt 的事件系统在合适的时机删除对象，确保线程安全
-			singleDownloader->thread()->quit(); // 停止线程事件循环，让子线程自己完成清理
+			singleDownloader->deleteLater();
 		}
 		else {
 			qWarning() << "[HttpClient] 清理任务资源失败，未找到任务 ID：" << taskId;

@@ -24,7 +24,7 @@ public:
 	void headRequest(const QString& taskId, const QUrl& url, const QString& initialFileName, const QString& saveDir);
 
 signals:
-	void headRequestError(const QString& errorString);
+	void headRequestError(const QUrl& url, const QString& errorString);
 	void headRequestSuccess(const QString& taskId,
 		const QUrl& url,
 		const QString& fileName,

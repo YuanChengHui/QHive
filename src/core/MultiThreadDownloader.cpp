@@ -110,7 +110,7 @@ void MultiThreadDownloader::pause()
 
 	for (auto worker : m_workers) {
 		if (m_workerStatus.value(worker, false)) {
-			worker->pause();
+			QMetaObject::invokeMethod(worker, "pause", Qt::QueuedConnection);
 		}
 	}
 }
@@ -135,13 +135,13 @@ void MultiThreadDownloader::cancel()
 		for (int chunkId : m_pendingChunks) {
 			m_chunks[chunkId].errorString = tr("下载已取消");
 		}
-		updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Failed));	
+		updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Failed));
 		emit downloadEnded(m_taskId, true, tr("下载已取消"), m_fullSavePath);
 		return;
 	}
 	for (auto worker : m_workers) {
 		if (m_workerStatus.value(worker, false)) {
-			worker->cancel();
+			QMetaObject::invokeMethod(worker, "cancel", Qt::QueuedConnection);
 		}
 	}
 }
@@ -336,7 +336,7 @@ void MultiThreadDownloader::retryChunk(int chunkId)
 		m_failedChunks.enqueue(chunkId);
 		return;
 	}
-	else if(m_isPaused){
+	else if (m_isPaused) {
 		m_pendingChunks.enqueue(chunkId);
 		return;
 	}
@@ -381,21 +381,21 @@ void MultiThreadDownloader::onWorkEnded(int chunkId, bool success, const QString
 	if (m_isPaused) return;
 	m_activeWorkers--;
 	m_workerStatus[worker] = false;
-	worker->requestChunk();
+	QMetaObject::invokeMethod(worker, &DownloadWorker::requestChunk, Qt::QueuedConnection);
 }
 
-void MultiThreadDownloader::onWorkPaused(int chunkId,bool isWorking)
+void MultiThreadDownloader::onWorkPaused(int chunkId, bool isWorking)
 {
 	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
 	m_activeWorkers--;
 	if (worker) {
 		m_workerStatus[worker] = false;
 	}
-	if(isWorking){
-	m_pendingChunks.enqueue(chunkId);
-	m_chunks[chunkId].errorString = tr("下载已暂停");
+	if (isWorking) {
+		m_pendingChunks.enqueue(chunkId);
+		m_chunks[chunkId].errorString = tr("下载已暂停");
 	}
-	
+
 	if (m_activeWorkers == 0) {
 		m_progressTimer->stop();
 		m_dbSaveTimer->stop();

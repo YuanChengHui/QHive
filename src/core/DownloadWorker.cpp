@@ -4,7 +4,7 @@
 DownloadWorker::DownloadWorker(int id, QObject* parent)
 	: QObject(parent)
 	, m_id(id)
-	, m_manager(new QNetworkAccessManager(this))
+	, m_manager(nullptr)
 	, m_reply(nullptr)
 	, m_startByte(0)
 	, m_endByte(0)
@@ -32,6 +32,9 @@ void DownloadWorker::requestChunk()
 void DownloadWorker::startDownload(const QUrl& url, qint64 startByte, qint64 endByte,
 	const QString& tempFilePath, int chunkId, qint64 downloadedBytes)
 {
+	if (m_manager == nullptr) {
+		m_manager = new QNetworkAccessManager(this);
+	}
 	m_isWorking = true;
 	m_failed = false;
 
@@ -57,6 +60,7 @@ void DownloadWorker::startDownload(const QUrl& url, qint64 startByte, qint64 end
 		m_tempFile = nullptr;
 		m_failed = true;
 		m_isWorking = false;
+		cleanup();
 		emit workEnded(m_chunkId, false, tr("无法创建临时文件: %1").arg(fileErr));
 		return;
 	}
@@ -148,6 +152,7 @@ void DownloadWorker::onFinished()
 	m_lastProgressTime.invalidate(); // 请求结束后不再更新进度时间
 	if (!m_reply) {
 		m_isWorking = false;
+		cleanup();
 		emit workUpdated(m_chunkId, m_downloadedBytes);
 		emit workEnded(m_chunkId, false, tr("网络请求异常结束"));
 		return;

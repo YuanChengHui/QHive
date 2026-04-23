@@ -13,18 +13,19 @@ SingleThreadDownloader::SingleThreadDownloader(const QString& fullSavePath,
 	qint64 totalSize,
 	const QString& taskId,
 	bool supportsRange,
+	QNetworkAccessManager* networkManager,
 	QObject* parent)
 	: QObject(parent)
-	, m_url(url)
-	, m_taskId(taskId)
-	, m_totalSize(totalSize)
 	, m_fullSavePath(fullSavePath)
-	, m_bytesReceived(0)
+	, m_url(url)
+	, m_totalSize(totalSize)
+	, m_taskId(taskId)
 	, m_supportsRange(supportsRange)
+	, m_networkManager(networkManager)
+	, m_bytesReceived(0)
 	, m_isDownloadEnded()
 	, m_file(nullptr)
 	, m_reply(nullptr)
-	, m_networkManager(nullptr)
 {
 	if (m_totalSize > 0 && m_supportsRange) {
 		m_isResumable = true;
@@ -40,10 +41,6 @@ SingleThreadDownloader::~SingleThreadDownloader()
 		m_reply = nullptr;
 	}
 	cleanupFile();
-	if (m_networkManager) {
-		delete m_networkManager;
-		m_networkManager = nullptr;
-	}
 }
 
 void SingleThreadDownloader::cleanupFile()
@@ -61,7 +58,7 @@ void SingleThreadDownloader::restorePausedState(qint64 downloadedBytes)
 	m_requestAborted = true;
 	m_errorString = tr("下载已暂停！");
 	m_bytesReceived = downloadedBytes;
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Paused));
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Paused));
 }
 
 void SingleThreadDownloader::restoreFailedState(qint64 downloadedBytes)
@@ -72,7 +69,7 @@ void SingleThreadDownloader::restoreFailedState(qint64 downloadedBytes)
 	if (m_isResumable) {
 		m_bytesReceived = downloadedBytes;
 	}
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 }
 
 void SingleThreadDownloader::restoreDownloadingState(qint64 downloadedBytes)
@@ -80,26 +77,22 @@ void SingleThreadDownloader::restoreDownloadingState(qint64 downloadedBytes)
 	if (m_isResumable) {
 		m_bytesReceived = downloadedBytes;
 	}
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
 	startNetworkRequest(m_bytesReceived);
 }
 
 void SingleThreadDownloader::start()
 {
-	if (!m_networkManager) {
-		m_networkManager = new QNetworkAccessManager(nullptr);
-	}
-
 	m_file = new QFile(m_fullSavePath);
 	if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
 		m_isDownloadEnded = true;
 		m_errorOccurred = true;
 		m_errorString = m_file->errorString();
-		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
+		TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 		emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 		return;
 	}
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
 	startNetworkRequest(m_bytesReceived);
 	m_dbSaveTimer.start();
 	m_lastProgressTime.start();
@@ -116,12 +109,12 @@ void SingleThreadDownloader::pause()
 
 	// 读取网络缓冲区剩余数据
 	if (m_reply && m_reply->bytesAvailable() > 0 && m_file && m_file->isOpen()) {
-		char buffer[64 * 1024];
+		QByteArray buffer(64 * 1024, Qt::Uninitialized);
 		qint64 totalRead = 0;
 		while (m_reply->bytesAvailable() > 0) {
-			qint64 len = m_reply->read(buffer, sizeof(buffer));
+			qint64 len = m_reply->read(buffer.data(), buffer.size());
 			if (len <= 0) break;
-			if (m_file->write(buffer, len) != len) {
+			if (m_file->write(buffer.constData(), len) != len) {
 				// 写入失败处理
 				break;
 			}
@@ -137,8 +130,8 @@ void SingleThreadDownloader::pause()
 		m_bytesReceived = m_file->size();
 	}
 	emit downloadProgressUpdate(m_taskId, m_bytesReceived);
-	emit needSaveProgress(m_taskId, m_bytesReceived);
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Paused));
+	TaskRepository().updateProgress(m_taskId, m_bytesReceived);
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Paused));
 	m_isDownloadEnded = false;
 	m_isPaused = true;
 	m_isCanceled = false;
@@ -162,8 +155,8 @@ void SingleThreadDownloader::resume()
 		m_isPaused = false;
 		m_errorOccurred = true;
 		m_errorString = m_file->errorString();
-		qCritical() << m_taskId << ":无法打开文件进行续传:" << m_errorString << "\n下载路径：" << m_fullSavePath;
-		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
+		qCritical() << m_taskId << tr(":无法打开文件进行续传:") << m_errorString << tr(" 下载路径：") << m_fullSavePath;
+		TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 		emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 		return;
 	}
@@ -173,7 +166,7 @@ void SingleThreadDownloader::resume()
 	m_retryCount = 0;
 
 	emit downloadResumed(m_taskId);
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
 
 	startNetworkRequest(m_bytesReceived);
 	m_dbSaveTimer.restart();
@@ -194,7 +187,7 @@ void SingleThreadDownloader::cancel()
 		if (QFile::exists(m_fullSavePath)) {
 			QFile::remove(m_fullSavePath);
 		}
-		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
+		TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 		emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 		return;
 	}
@@ -225,7 +218,7 @@ void SingleThreadDownloader::retry()
 		if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
 			m_isCanceled = false;
 			m_errorString = m_file->errorString();
-			qCritical() << m_taskId << ":无法打开文件进行重试:" << m_errorString;
+			qCritical() << m_taskId << tr(":无法打开文件进行重试:") << m_errorString;
 			emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 			return;
 		}
@@ -240,7 +233,7 @@ void SingleThreadDownloader::retry()
 		if (!m_file->open(QIODevice::Append)) {
 			m_isCanceled = false;
 			m_errorString = m_file->errorString();
-			qCritical() << m_taskId << ":无法打开文件进行重试:" << m_errorString;
+			qCritical() << m_taskId << tr(":无法打开文件进行重试:") << m_errorString;
 			emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 			return;
 		}
@@ -249,7 +242,7 @@ void SingleThreadDownloader::retry()
 	m_isCanceled = false;
 	m_errorOccurred = false;
 	m_requestAborted = false;
-	emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
+	TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Downloading));
 	startNetworkRequest(m_bytesReceived);
 	m_dbSaveTimer.restart();
 	m_lastProgressTime.restart();
@@ -257,10 +250,6 @@ void SingleThreadDownloader::retry()
 
 void SingleThreadDownloader::startNetworkRequest(qint64 startByte)
 {
-	if (!m_networkManager) {
-		m_networkManager = new QNetworkAccessManager(nullptr);
-	}
-
 	QNetworkRequest request(m_url);
 	request.setTransferTimeout(15000);
 	request.setRawHeader("Accept", "*/*");
@@ -293,9 +282,9 @@ void SingleThreadDownloader::startNetworkRequest(qint64 startByte)
 		m_isDownloadEnded = true;
 		m_errorOccurred = true;
 		m_errorString = tr("无法发起网络请求");
-		qCritical() << m_taskId << ":无法发起网络请求:" << m_errorString;
-		emit needSaveProgress(m_taskId, m_bytesReceived);
-		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
+		qCritical() << m_taskId << tr(":无法发起网络请求:") << m_errorString;
+		TaskRepository().updateProgress(m_taskId, m_bytesReceived);
+		TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 		emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 		return;
 	}
@@ -343,7 +332,7 @@ void SingleThreadDownloader::onReadyRead()
 			m_lastProgressTime.restart();
 		}
 		if (!m_dbSaveTimer.isValid() || m_dbSaveTimer.elapsed() >= DB_SAVE_INTERVAL_MS) {
-			emit needSaveProgress(m_taskId, m_bytesReceived);
+			TaskRepository().updateProgress(m_taskId, m_bytesReceived);
 			m_dbSaveTimer.restart();
 		}
 	}
@@ -376,10 +365,10 @@ void SingleThreadDownloader::onFinished()
 	m_isDownloadEnded = true;
 
 	if (m_errorOccurred) {
-		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
+		TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Failed));
 	}
 	else {
-		emit needSaveState(m_taskId, static_cast<int>(TaskRepository::TaskState::Completed));
+		TaskRepository().updateState(m_taskId, static_cast<int>(TaskRepository::TaskState::Completed));
 	}
 	// 读取网络缓冲区剩余数据
 	if (m_reply && m_reply->bytesAvailable() > 0 && m_file && m_file->isOpen()) {
@@ -393,7 +382,7 @@ void SingleThreadDownloader::onFinished()
 		m_file->flush();
 	}
 	emit downloadProgressUpdate(m_taskId, m_bytesReceived);
-	emit needSaveProgress(m_taskId, m_bytesReceived);
+	TaskRepository().updateProgress(m_taskId, m_bytesReceived);
 	cleanupFile();
 	if (m_isCanceled) {
 		if (QFile::exists(m_fullSavePath)) {
@@ -411,13 +400,18 @@ void SingleThreadDownloader::retryRequest()
 {
 	if (m_isCanceled || m_isPaused) return;
 	m_retryScheduled = false;
-	if (m_supportsRange && m_totalSize > 0) {
+	if (m_isResumable) {
 		if (!m_file->open(QIODevice::Append)) {
 			m_isDownloadEnded = true;
 			m_errorOccurred = true;
 			m_requestAborted = true;
-			m_errorString = m_file->errorString();
-			qCritical() << m_taskId << ":无法打开文件进行重试:" << m_errorString;
+			if (m_file) {
+				m_errorString = m_file->errorString();
+			}
+			else {
+				m_errorString = tr("无法创建文件进行重试");
+			}
+			qCritical() << m_taskId << tr(":无法打开文件进行重试:") << m_errorString;
 			if (m_reply) m_reply->abort();
 			return;
 		}
@@ -428,8 +422,13 @@ void SingleThreadDownloader::retryRequest()
 			m_isDownloadEnded = true;
 			m_errorOccurred = true;
 			m_requestAborted = true;
-			m_errorString = m_file->errorString();
-			qCritical() << m_taskId << ":无法打开文件进行重试:" << m_errorString;
+			if (m_file) {
+				m_errorString = m_file->errorString();
+			}
+			else {
+				m_errorString = tr("无法创建文件进行重试");
+			}
+			qCritical() << m_taskId << tr(":无法打开文件进行重试:") << m_errorString;
 			if (m_reply) m_reply->abort();
 			return;
 		}
