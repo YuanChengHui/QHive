@@ -129,8 +129,17 @@ void DownloadTaskItemWidget::updateSpeed(qint64 delta)
 	qint64 elapsed = m_lastTime.restart();
 	if (elapsed <= 0) return;
 
-	double speed = delta * 1000.0 / elapsed;
-	ui.speedLabel->setText(formatBytes(speed) + "/s");
+	double instantSpeed = delta * 1000.0 / elapsed;
+	if (!m_smoothSpeedInitialized) {
+		m_smoothSpeed = instantSpeed;
+		m_smoothSpeedInitialized = true;
+	}
+	else {
+		const double alpha = 0.3; // 平滑因子，越大越跟随即时速度，越小越平滑
+		m_smoothSpeed = alpha * instantSpeed + (1.0 - alpha) * m_smoothSpeed;
+	}
+
+	ui.speedLabel->setText(formatBytes(m_smoothSpeed) + "/s");
 }
 
 void DownloadTaskItemWidget::showPauseButton(bool show)

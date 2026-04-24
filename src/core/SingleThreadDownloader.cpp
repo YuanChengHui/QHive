@@ -36,11 +36,28 @@ SingleThreadDownloader::SingleThreadDownloader(const QString& fullSavePath,
 
 SingleThreadDownloader::~SingleThreadDownloader()
 {
+	if (!m_isDownloadEnded && !m_isPaused) {
+		m_errorOccurred = true;
+		m_requestAborted = true;
+		m_isDownloadEnded = true;
+		if (m_reply) {
+			m_reply->disconnect(this);
+			m_reply->abort();
+			m_reply->deleteLater();
+			m_reply = nullptr;
+		}
+	}
 	if (m_reply) {
 		delete m_reply;
 		m_reply = nullptr;
 	}
 	cleanupFile();
+
+	if (m_errorOccurred || !m_isDownloadEnded) {
+		if (QFile::exists(m_fullSavePath)) {
+			QFile::remove(m_fullSavePath);
+		}
+	}
 }
 
 void SingleThreadDownloader::cleanupFile()
@@ -177,7 +194,6 @@ void SingleThreadDownloader::cancel()
 {
 	if (m_isDownloadEnded) return;
 
-	m_isDownloadEnded = true;
 	m_errorOccurred = true;
 	m_isCanceled = true;
 	m_requestAborted = true;
@@ -288,7 +304,6 @@ void SingleThreadDownloader::startNetworkRequest(qint64 startByte)
 		emit downloadEnded(m_taskId, m_errorOccurred, m_errorString, m_fullSavePath);
 		return;
 	}
-	m_retryCount = 0;
 
 	connect(m_reply, &QNetworkReply::readyRead, this, &SingleThreadDownloader::onReadyRead);
 	connect(m_reply, &QNetworkReply::errorOccurred, this, [this](QNetworkReply::NetworkError code) {
@@ -302,7 +317,6 @@ void SingleThreadDownloader::startNetworkRequest(qint64 startByte)
 			}
 			m_retryScheduled = false;
 			m_errorOccurred = true;
-			m_isDownloadEnded = true;
 			m_errorString = m_reply->errorString();
 			qCritical() << "网络错误:" << code;
 		}
@@ -314,7 +328,6 @@ void SingleThreadDownloader::onReadyRead()
 {
 	if (m_isDownloadEnded || m_isPaused)return;
 	if (!m_file || !m_file->isOpen()) {
-		m_isDownloadEnded = true;
 		m_errorOccurred = true;
 		m_requestAborted = true;
 		m_errorString = tr("文件未打开");
@@ -337,16 +350,18 @@ void SingleThreadDownloader::onReadyRead()
 		}
 	}
 	else {
-		m_isDownloadEnded = true;
 		m_errorOccurred = true;
 		m_requestAborted = true;
 		m_errorString = tr("写入文件失败");
-		if (m_reply) m_reply->abort();
+		if (m_reply) {
+			m_reply->abort();
+		}
 	}
 }
 
 void SingleThreadDownloader::onFinished()
 {
+	if (m_isDownloadEnded) return;
 	if (m_isPaused) {
 		cleanupFile();
 		if (m_reply) {
@@ -398,11 +413,12 @@ void SingleThreadDownloader::onFinished()
 
 void SingleThreadDownloader::retryRequest()
 {
-	if (m_isCanceled || m_isPaused) return;
+	if (m_isCanceled || m_isPaused || m_isDownloadEnded) return;
 	m_retryScheduled = false;
+	if (m_file && m_file->isOpen()) { m_file->close(); }
+
 	if (m_isResumable) {
 		if (!m_file->open(QIODevice::Append)) {
-			m_isDownloadEnded = true;
 			m_errorOccurred = true;
 			m_requestAborted = true;
 			if (m_file) {
@@ -412,14 +428,14 @@ void SingleThreadDownloader::retryRequest()
 				m_errorString = tr("无法创建文件进行重试");
 			}
 			qCritical() << m_taskId << tr(":无法打开文件进行重试:") << m_errorString;
-			if (m_reply) m_reply->abort();
+			if (m_reply) {
+				m_reply->abort();
+			}
 			return;
 		}
 	}
 	else {
-		if (m_file && m_file->isOpen()) { m_file->close(); }
 		if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-			m_isDownloadEnded = true;
 			m_errorOccurred = true;
 			m_requestAborted = true;
 			if (m_file) {
@@ -429,7 +445,9 @@ void SingleThreadDownloader::retryRequest()
 				m_errorString = tr("无法创建文件进行重试");
 			}
 			qCritical() << m_taskId << tr(":无法打开文件进行重试:") << m_errorString;
-			if (m_reply) m_reply->abort();
+			if (m_reply) {
+				m_reply->abort();
+			}
 			return;
 		}
 		m_bytesReceived = 0;

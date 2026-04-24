@@ -29,7 +29,7 @@ public:
 signals:
 	// UI 进度信号
 	void downloadProgressUpdate(const QString& taskId, qint64 received);
-	// 下载结束信号
+
 	void downloadEnded(const QString& taskId, bool errorOccurred, const QString& errorString, const QString& savePath);
 	void downloadPaused(const QString& taskId);
 	void downloadResumed(const QString& taskId);

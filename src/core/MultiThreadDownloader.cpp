@@ -8,6 +8,8 @@
 #include <QJsonArray>
 #include <QFileInfo>
 #include <numeric>
+#include <QStandardPaths>
+#include <QCoreApplication> 
 
 MultiThreadDownloader::MultiThreadDownloader(const QString& fullSavePath, const QUrl& url,
 	qint64 totalSize, const QString& taskId, int threadCount, QObject* parent)
@@ -25,6 +27,18 @@ MultiThreadDownloader::MultiThreadDownloader(const QString& fullSavePath, const 
 	m_dbSaveTimer = new QTimer(this);
 	m_dbSaveTimer->setInterval(DB_SAVE_INTERVAL_MS);
 	connect(m_dbSaveTimer, &QTimer::timeout, this, [this]() { updateStateToDatabase(static_cast<int>(TaskRepository::TaskState::Downloading)); });
+
+	QString appDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+	if (appDataDir.isEmpty()) {
+		appDataDir = QCoreApplication::applicationDirPath();
+	}
+	m_taskCacheDir = appDataDir + "/chunks/" + m_taskId;
+	if (!QDir().mkpath(m_taskCacheDir)) {
+		// 降级：保存路径同级的隐藏目录
+		QFileInfo saveInfo(m_fullSavePath);
+		m_taskCacheDir = saveInfo.absolutePath() + "/" + saveInfo.baseName() + "_tmp";
+		QDir().mkpath(m_taskCacheDir);
+	}
 }
 
 MultiThreadDownloader::~MultiThreadDownloader()
@@ -32,6 +46,7 @@ MultiThreadDownloader::~MultiThreadDownloader()
 	if (m_progressTimer) m_progressTimer->stop();
 	if (m_dbSaveTimer) m_dbSaveTimer->stop();
 	stopAllThreads();
+	cleanupTempFiles();
 }
 
 void MultiThreadDownloader::restorePausedState()
@@ -198,7 +213,7 @@ void MultiThreadDownloader::calculateRanges()
 		info.id = chunkId;
 		info.startByte = offset;
 		info.endByte = offset + thisSize - 1;
-		info.tempFilePath = QString("%1.part%2").arg(m_fullSavePath).arg(chunkId);
+		info.tempFilePath = QString("%1/chunk_%2.part").arg(m_taskCacheDir).arg(chunkId);
 		m_chunks.insert(chunkId, info);
 		m_pendingChunks.enqueue(chunkId);
 		offset += thisSize;
@@ -355,6 +370,7 @@ void MultiThreadDownloader::retryChunk(int chunkId)
 
 void MultiThreadDownloader::onWorkEnded(int chunkId, bool success, const QString& error)
 {
+	if (m_isDownloadEnded) return;
 	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
 	if (success) {
 		m_successfulChunks.enqueue(chunkId);
@@ -378,7 +394,7 @@ void MultiThreadDownloader::onWorkEnded(int chunkId, bool success, const QString
 			}
 		}
 	}
-	if (m_isPaused) return;
+	if (m_isPaused) return;	// 如果已暂停，不分配新任务，等待用户操作
 	m_activeWorkers--;
 	m_workerStatus[worker] = false;
 	QMetaObject::invokeMethod(worker, &DownloadWorker::requestChunk, Qt::QueuedConnection);
@@ -386,6 +402,7 @@ void MultiThreadDownloader::onWorkEnded(int chunkId, bool success, const QString
 
 void MultiThreadDownloader::onWorkPaused(int chunkId, bool isWorking)
 {
+	if (m_isDownloadEnded || m_isPaused) return;
 	DownloadWorker* worker = qobject_cast<DownloadWorker*>(sender());
 	m_activeWorkers--;
 	if (worker) {
@@ -451,9 +468,8 @@ void MultiThreadDownloader::updateStateToDatabase(int state)
 
 void MultiThreadDownloader::cleanupTempFiles()
 {
-	for (const auto& chunk : m_chunks) {
-		if (QFile::exists(chunk.tempFilePath))
-			QFile::remove(chunk.tempFilePath);
+	if (!m_taskCacheDir.isEmpty() && QDir(m_taskCacheDir).exists()) {
+		QDir(m_taskCacheDir).removeRecursively();
 	}
 }
 

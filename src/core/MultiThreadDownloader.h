@@ -71,7 +71,8 @@ private:
 
 	QUrl m_url;
 	QString m_taskId;
-	QString m_fullSavePath;
+	QString m_fullSavePath; // 最终合并后的文件路径
+	QString m_taskCacheDir;	// 用于存储分块下载的临时文件目录
 	qint64 m_totalSize;
 	int m_threadCount;
 

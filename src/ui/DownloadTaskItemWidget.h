@@ -72,4 +72,7 @@ private:
 	bool m_isPaused;
 	bool m_isDownloadEnded;
 	QElapsedTimer m_lastTime;
+
+	double m_smoothSpeed = 0.0;	
+	bool m_smoothSpeedInitialized = false; // 用于平滑速度显示的标志
 };
