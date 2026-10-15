@@ -9,6 +9,7 @@
 #include <QScrollArea>
 #include <QVBoxLayout>
 #include <QAction>
+#include <QPointer>
 #include <QHash>
 
 class QHive : public QMainWindow
@@ -27,7 +28,7 @@ private:
 private slots:
 	void openDownloadDialog();
 	void pauseAllTasks();
-	void resumeAllTasks();	
+	void resumeAllTasks();
 	void removeTaskListItem();
 	void createDownloadTask(const QString& taskId, const QUrl& taskUrl,
 		const QString& fileName, const QString& fullSavePath,
@@ -53,10 +54,10 @@ private:
 	QAction* pauseDownload;
 	QAction* resumeDownload;
 	HttpClient* httpClient;
-	DownloadDialog* downloadDialog;
+	QPointer<DownloadDialog> downloadDialog;
 	QScrollArea* m_downloadListArea;
 	QVBoxLayout* m_downloadListLayout;
-	int m_selectedCount = 0;	// 当前选中的任务数量
+	int m_selectedCount = 0;
 	QHash<QString, DownloadTaskItemWidget*> m_activeDownloads;
-	QHash<QString, bool> m_taskResults;	// 记录每个任务的结果状态，true 表示成功，false 表示失败或未完成
+	QHash<QString, bool> m_taskResults;
 };

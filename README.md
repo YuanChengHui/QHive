@@ -1,51 +1,93 @@
-# QHive
+﻿# QHive
 
-**QHive** 是一个基于 Qt6/C++20 开发的跨平台下载工具，支持 **多任务并发下载**、**单任务多线程分片**、**断点续传**、**任务持久化** 等特性。适用于 HTTP/HTTPS 协议的普通文件下载，适合学习以及日常使用。
+基于 **Qt6 / C++17** 的跨平台 HTTP/HTTPS 下载工具，支持多任务并发、多线程分片、断点续传、任务持久化、全局并发控制。
 
 ## ✨ 核心特性
 
-- 🚀 **多任务并发** – 同时管理多个下载任务，任务之间互不阻塞，界面始终保持流畅。
-- ⚡ **单任务多线程分片** – 根据文件大小自动切分为 1~16 个分片，每个分片独立线程下载，大文件速度有显著提升。
-- 🔁 **断点续传** – 支持暂停/恢复，程序异常退出后可从中断处继续下载，不浪费已下载的数据。
-- 🛡️ **智能降级** – 自动检测服务器是否支持 `Accept-Ranges: bytes`，不支持时无缝切换为单线程模式。
-- 🔄 **失败重试** – 内置指数退避重试机制（最多 3 次），弱网环境下显著提高下载成功率。
-- 💾 **任务持久化** – 使用 SQLite 存储任务状态、分片进度、临时文件路径，重启程序后自动恢复未完成的任务。
-- 🧹 **资源自动清理** – 取消或失败时自动删除临时文件，合并分片前校验完整性，避免磁盘残留。
-- 🎨 **现代化 GUI** – 任务列表支持多选、全选、批量暂停/恢复/删除，实时显示速度、进度、状态色块。
+- 🚀 **多任务并发** – 同时管理多个下载任务，互不阻塞。
+- ⚡ **多线程分片** – 按文件大小自动切分 1~16 个分片，并行下载。
+- 🔁 **断点续传** – 支持暂停/恢复，程序重启后从中断处继续。
+- 🛡️ **智能降级** – 服务器不支持 `Accept-Ranges` 时自动切换单请求模式。
+- 🔄 **失败重试** – 指数退避重试，最多 3 次。
+- 💾 **任务持久化** – SQLite 存储任务状态与分片进度，重启自动恢复。
+- 🎯 **全局并发控制** – QSemaphore 限制全局并发连接数，避免触发限流。
+- 🧵 **统一网络线程池** – 所有网络 IO 走固定数量的 NetworkContext，避免线程爆炸。
+- 📂 **网络/磁盘 IO 解耦** – 网络线程只收数据，写盘由独立 FileWriterPool 负责。
+- 🎨 **现代化 GUI** – 任务列表支持多选、批量暂停/恢复/删除，实时显示速度与进度。
 
-## 🛠️ 技术架构
+## 🛠️ 技术栈
 
-| 模块   | 技术/库                                   |
-| ---- | -------------------------------------- |
-| 语言   | C++17/20                               |
-| 框架   | Qt6 (Core, Gui, Widgets, Network, Sql) |
-| 构建工具 | CMake 3.20+                            |
-| 数据库  | SQLite (通过 Qt SQL 模块)                  |
-| 并发模型 | QThread + moveToThread + 工作队列          |
-| 网络协议 | HTTP/1.1 (HEAD, GET, Range)            |
+| 模块 | 技术 |
+| ---- | ---- |
+| 语言 | C++17 |
+| 框架 | Qt6 (Core, Gui, Widgets, Network, Concurrent, Sql) |
+| 构建 | CMake 3.20+ |
+| 数据库 | SQLite (Qt SQL) |
+| 并发 | QThread + moveToThread + 事件驱动 + 全局线程池 |
+| 协议 | HTTP/1.1 (HEAD, GET, Range) |
 
-### 核心设计
 
-- **HttpClient（单例）** – 全局下载调度中心，管理所有活动的多线程/单线程下载器，单线程任务与HEAD请求共享一个 `QNetworkAccessManager` 实例。
-- **HeadRequestTask** – 发送 HEAD 请求，获取文件大小、断点续传支持情况，并校验磁盘空间。
-- **DownloadWorker** – 实际执行分片下载的工作对象，每个 Worker 独立运行在 `QThread` 中，通过网络请求拉取指定字节范围并写入临时文件。
-- **MultiThreadDownloader** – 管理单任务的多线程下载生命周期：分片计算、Worker 线程池、进度合并、失败重试、分片合并、数据库持久化。
-- **SingleThreadDownloader** – 管理单线程下载（服务器不支持 Range 时/总大小未知/文件在10MB以内使用），同样支持暂停/恢复/重试。
-- **TaskRepository** – SQLite 的 CRUD 封装，存储任务元信息、分片 JSON 状态、下载进度等。
-- **DownloadDialog / DownloadTaskItemWidget** – UI 组件，提供添加任务对话框和任务卡片控件，支持实时速度、进度百分比、状态色块等。
+## 📂 目录结构
 
-## 📦 依赖环境
+```
+src/
+├── core/          # HttpClient, DownloadTask, DownloadTypes
+├── network/       # NetworkRequest, HeadRequest, DownloadRequest
+│                  # NetworkContext, NetworkContextPool
+├── utils/         # FileWriter, FileWriterPool, GlobalConcurrency
+├── database/      # DatabaseManager, TaskRepository
+└── ui/            # QHive, DownloadDialog, DownloadTaskItemWidget
+```
 
-- **Qt 6.x** 或 **Qt 5.15+**（需包含模块：Core, Gui, Widgets, Network, Sql）
-- **CMake 3.20** 及以上
-- **C++17 兼容编译器**（MSVC 2019+ / GCC 9+ / Clang 10+）
+## 🧩 核心设计
 
-## 📜 开源协议
+**NetworkContextPool（全局网络线程池）**
+固定 4~8 个 `NetworkContext`，每个跑在独立线程，内部持有自己的 `QNetworkAccessManager` 与事件循环。所有网络请求（HEAD + 分片 GET）统一提交到池中轮询分配。
+- 线程数与 QNAM 数从 `O(任务数 × 分片数)` 降到 `O(1)`
+- 连接池复用率提升，keep-alive 命中率更高
+- 通过 `QSemaphore` 全局限制并发连接数（默认 16）
 
-本项目采用 [MIT License](https://license/)，允许自由使用、修改、分发。
+**网络 IO 与磁盘 IO 解耦**
+`DownloadRequest` 收到数据后通过信号发给 `FileWriterPool`，由独立的写入线程落盘。合并前用 `closeFileBlocking` 确保数据全部写入。
+
+**DownloadTask（任务状态机）**
+维护 pending / successful / failed 三个分片队列，负责调度、重试、暂停恢复、合并触发、数据库持久化。分片启动前用临时文件实际大小作为已下载量，避免缓存不一致。
+
+**合并放子线程**
+`mergeChunksAsync()` 用 `QtConcurrent::run` 执行合并，避免大文件阻塞 UI；完成后通过 `QMetaObject::invokeMethod` 回主线程更新 UI 与数据库。
+
+## 📦 依赖
+
+- Qt 6.x（Core, Gui, Widgets, Network, Concurrent, Sql）
+- CMake 3.20+
+- C++17 编译器（MSVC 2019+ / GCC 9+ / Clang 10+）
+
+## 🔨 构建
+
+```bash
+# Windows (MSVC + Qt6)
+cmake -B build -G "Visual Studio 17 2022" -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64"
+cmake --build build --config Release
+
+# Linux / macOS
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+## 🗺️ 后续规划
+
+- [ ] 全局限速（令牌桶）
+- [ ] 文件完整性校验（SHA-256）
+- [ ] 代理支持（HTTP / SOCKS5）
+- [ ] 多源下载（镜像加速）
+- [ ] 独立数据库线程
+
+## 📜 协议
+
+[MIT License](https://opensource.org/licenses/MIT)
 
 ## 👤 作者
 
-- **YuanChengHui** – [GitHub](https://github.com/YuanChengHui) | 邮箱：yuanchenghui_dev@163.com
+**YuanChengHui** – [GitHub](https://github.com/YuanChengHui) | yuanchenghui_dev@163.com
 
 *如果这个项目对你有帮助，欢迎 Star ⭐ 支持！*

@@ -46,7 +46,7 @@ bool DatabaseManager::init(const QString& dbPath)
         total_size INTEGER,
         downloaded_bytes INTEGER,
         state INTEGER,
-        thread_count INTEGER,
+        chunk_count INTEGER,
         supports_range INTEGER DEFAULT 1, 
         chunks TEXT,
         created_time INTEGER,

@@ -1,7 +1,6 @@
 ﻿#pragma once
 
-#include "MultiThreadDownloader.h"
-#include "SingleThreadDownloader.h"
+#include "DownloadTask.h"
 
 #include <QObject>
 #include <QUrl>
@@ -21,7 +20,8 @@ public:
 	void cancelDownload(const QString& taskId);
 	void retryDownload(const QString& taskId);
 	void cleanTaskResources(const QString& taskId);
-	void headRequest(const QString& taskId, const QUrl& url, const QString& initialFileName, const QString& saveDir);
+	void headRequest(const QString& taskId, const QUrl& url,
+		const QString& initialFileName, const QString& saveDir);
 
 signals:
 	void headRequestError(const QUrl& url, const QString& errorString);
@@ -39,7 +39,8 @@ signals:
 	void downloadResumed(const QString& taskId);
 
 private slots:
-	void handleResult(const QString& taskId, bool errorOccurred, const QString& errorString, const QString& savePath);
+	void handleResult(const QString& taskId, bool errorOccurred,
+		const QString& errorString, const QString& savePath);
 
 private:
 	explicit HttpClient(QObject* parent = nullptr);
@@ -47,41 +48,24 @@ private:
 	HttpClient(const HttpClient&) = delete;
 	HttpClient& operator=(const HttpClient&) = delete;
 
-	QNetworkAccessManager* m_networkManager = nullptr;
-
-	void launchDownload(const QString& taskId,
-		const QUrl& url,
-		bool supportsRange,
-		qint64 totalSize,
+	void launchDownload(const QString& taskId, const QUrl& url,
+		bool supportsRange, qint64 totalSize,
 		const QString& fullSavePath);
 
-	MultiThreadDownloader* createMultiDownloader(const QString& taskId,
+	DownloadTask* createDownloadTask(const QString& taskId,
 		const QString& fullSavePath,
 		const QUrl& url,
 		qint64 totalSize,
-		int threadCount);
+		bool supportsRange,
+		int chunkCount);
 
-	SingleThreadDownloader* createSingleDownloader(const QString& taskId,
-		const QString& fullSavePath,
-		const QUrl& url,
-		qint64 totalSize,
-		bool supportsRange);
+	DownloadTask* findTask(const QString& taskId);
 
-	void startMultiDownload(const QString& taskId,
-		const QString& fullSavePath,
-		const QUrl& taskUrl,
-		qint64 totalSize,
-		int threadCount);
+	static QString parseFileName(const QByteArray& contentDisposition,
+		const QByteArray& contentType,
+		const QString& initialFileName);
+	static QString generateUniqueFileName(const QString& saveDir, const QString& fileName);
+	static bool checkDiskSpace(const QString& saveDir, qint64 requiredBytes, QString& errorString);
 
-	void startSingleDownload(const QString& taskId,
-		const QString& fullSavePath,
-		const QUrl& taskUrl,
-		qint64 totalSize,
-		bool supportsRange);
-
-	MultiThreadDownloader* findMultiDownloadTask(const QString& taskId);
-	SingleThreadDownloader* findSingleDownloadTask(const QString& taskId);
-
-	QHash<QString, MultiThreadDownloader*> m_activeMultiDownloads;
-	QHash<QString, SingleThreadDownloader*> m_activeSingleDownloads;
+	QHash<QString, DownloadTask*> m_activeTasks;
 };

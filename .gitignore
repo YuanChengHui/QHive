@@ -32,6 +32,8 @@ bld/
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
+build/
+cmake-build-*/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
@@ -362,8 +364,23 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-# CMake user local preset (do not share)
+# CMake
 CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
 
-# IDE user config (e.g., Qt Creator)
+# Qt
+*.pro.user
+*.pro.user.*
 CMakeLists.txt.user
+CMakeLists.txt.user.*
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+*.moc
+.qmake.stash
+.qtc_clangd/

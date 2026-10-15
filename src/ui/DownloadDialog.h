@@ -24,8 +24,8 @@ private slots:
 	void on_changeSavePathButton_clicked();
 
 private:
-	void getFileNameFromUrl();
-	void populateUrlFromClipboard();
+	void getFileNameFromUrl();	// 从 URL 中获取文件名
+	void populateUrlFromClipboard();	// 从剪贴板中获取 URL
 
 private:
 	Ui::DownloadDialogClass ui;

@@ -15,7 +15,7 @@ bool TaskRepository::saveTask(const TaskInfo& task)
 	query.prepare(R"(
         INSERT INTO tasks 
         (task_id, url, file_name, save_path, total_size, downloaded_bytes, state, 
-         thread_count, supports_range, chunks, created_time, updated_time)
+         chunk_count, supports_range, chunks, created_time, updated_time)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )");
 	query.addBindValue(task.taskId);
@@ -25,7 +25,7 @@ bool TaskRepository::saveTask(const TaskInfo& task)
 	query.addBindValue(task.totalSize);
 	query.addBindValue(task.downloadedBytes);
 	query.addBindValue(task.state);
-	query.addBindValue(task.threadCount);
+	query.addBindValue(task.chunkCount);
 	query.addBindValue(task.supportsRange ? 1 : 0);
 	query.addBindValue(task.chunksJson);
 	qint64 now = QDateTime::currentSecsSinceEpoch();
@@ -71,7 +71,7 @@ QList<TaskRepository::TaskInfo> TaskRepository::loadAllTasks()
 		info.totalSize = query.value("total_size").toLongLong();
 		info.downloadedBytes = query.value("downloaded_bytes").toLongLong();
 		info.state = query.value("state").toInt();
-		info.threadCount = query.value("thread_count").toInt();
+		info.chunkCount = query.value("chunk_count").toInt();
 		info.supportsRange = query.value("supports_range").toInt() != 0;
 		info.chunksJson = query.value("chunks").toString();
 		info.createdTime = query.value("created_time").toLongLong();
@@ -98,7 +98,7 @@ TaskRepository::TaskInfo TaskRepository::loadTask(const QString& taskId)
 		info.totalSize = query.value("total_size").toLongLong();
 		info.downloadedBytes = query.value("downloaded_bytes").toLongLong();
 		info.state = query.value("state").toInt();
-		info.threadCount = query.value("thread_count").toInt();
+		info.chunkCount = query.value("chunk_count").toInt();
 		info.supportsRange = query.value("supports_range").toInt() != 0;
 		info.chunksJson = query.value("chunks").toString();
 		info.createdTime = query.value("created_time").toLongLong();

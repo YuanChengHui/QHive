@@ -23,7 +23,7 @@ public:
 		qint64 totalSize = -1;
 		qint64 downloadedBytes = 0;
 		int state = 0;
-		int threadCount = 1;
+		int chunkCount = 1;
 		bool supportsRange = true;
 		QString chunksJson;
 		qint64 createdTime = 0;
