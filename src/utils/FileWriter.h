@@ -17,10 +17,6 @@ public slots:
 	void closeFile(const QString& path);
 	void closeAll();
 
-signals:
-	void writeFinished(const QString& path, qint64 written);
-	void writeFailed(const QString& path, const QString& error);
-
 private:
 	QFile* getFile(const QString& path);
 	int m_id;

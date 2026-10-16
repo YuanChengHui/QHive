@@ -35,8 +35,14 @@ bool DatabaseManager::init(const QString& dbPath)
 		return false;
 	}
 
+	// SQLite 性能调优
+	QSqlQuery pragma(m_db);
+	pragma.exec("PRAGMA journal_mode = WAL;");      // 写前日志，读写不互斥
+	pragma.exec("PRAGMA synchronous = NORMAL;");    // 降低 fsync 频率，写性能提升 5~10 倍
+	pragma.exec("PRAGMA temp_store = MEMORY;");     // 临时表放内存
+	pragma.exec("PRAGMA cache_size = -8000;");      // 8MB 页缓存
+
 	QSqlQuery query(m_db);
-	// 创建表
 	if (!query.exec(R"(
     CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,

@@ -1,11 +1,12 @@
 ﻿#pragma once
 
+#include "DownloadTypes.h"
+
 #include <QObject>
 #include <QUrl>
 #include <QMap>
 #include <QQueue>
 #include <QTimer>
-#include "DownloadTypes.h"
 
 class DownloadRequest;
 

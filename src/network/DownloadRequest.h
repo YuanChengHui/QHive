@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "NetworkRequest.h"
+
 #include <QNetworkReply>
 #include <QUrl>
 #include <QString>
@@ -21,9 +22,9 @@ public:
 	QString taskId() const { return m_taskId; }
 
 signals:
-	void dataReceived(int chunkId, const QByteArray& data);
-	void progress(int chunkId, qint64 received);
-	void finished(int chunkId, bool success, const QString& error);
+	void dataReceived(int chunkId, const QByteArray& data);	// 分片数据接收信号
+	void progress(int chunkId, qint64 received);	// 分片下载进度信号
+	void finished(int chunkId, bool success, const QString& error);	// 分片下载完成信号
 
 private slots:
 	void onReadyRead();

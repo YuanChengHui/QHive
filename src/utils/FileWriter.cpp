@@ -18,20 +18,15 @@ void FileWriter::writeChunk(const QString& path, const QByteArray& data)
 {
 	QFile* file = getFile(path);
 	if (!file) {
-		emit writeFailed(path, QStringLiteral("无法打开文件: %1").arg(path));
+		qWarning() << "[FileWriter] 无法打开文件:" << path;
 		return;
 	}
 
 	qint64 written = file->write(data);
 	if (written != data.size()) {
-		emit writeFailed(path, QStringLiteral("写入文件失败: %1").arg(file->errorString()));
+		qWarning() << "[FileWriter] 写入文件失败:" << file->errorString();
 		return;
 	}
-
-	// 可选：立即 flush，确保数据落盘。对于大文件频繁 flush 可能影响性能，可以按需调用。
-	// file->flush();
-
-	emit writeFinished(path, written);
 }
 
 void FileWriter::closeFile(const QString& path)
@@ -68,7 +63,6 @@ QFile* FileWriter::getFile(const QString& path)
 			return file;
 		}
 		else {
-			// 文件被关闭了？重新打开
 			if (file->open(QIODevice::WriteOnly | QIODevice::Append)) {
 				return file;
 			}
@@ -78,9 +72,7 @@ QFile* FileWriter::getFile(const QString& path)
 		}
 	}
 
-	// 创建新文件
 	QFile* file = new QFile(path);
-	// 确保目录存在
 	QFileInfo info(path);
 	QDir dir = info.absoluteDir();
 	if (!dir.exists()) {
